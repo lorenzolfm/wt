@@ -1,6 +1,6 @@
 use crate::repo::Repo;
 use crate::seed::{self, Outcome};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -62,10 +62,10 @@ pub fn install(repo: &Repo) -> Result<(PathBuf, bool)> {
     }
     if fs::symlink_metadata(&hook).is_ok() {
         fs::remove_file(&hook)
-            .with_context(|| format!("replacing existing hook at {}", hook.display()))?;
+            .with_context(|| format!("wt cannot replace the hook at {}", hook.display()))?;
     }
     std::os::unix::fs::symlink(&target, &hook)
-        .with_context(|| format!("installing hook at {}", hook.display()))?;
+        .with_context(|| format!("wt cannot make the hook at {}", hook.display()))?;
     Ok((target, true))
 }
 

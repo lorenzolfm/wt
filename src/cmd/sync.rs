@@ -1,5 +1,5 @@
 use crate::repo::Repo;
-use crate::seed::{seed_entry, Outcome};
+use crate::seed::{Outcome, seed_entry};
 use anyhow::Result;
 
 /// Compare each worktree with the manifest and make the links that are
@@ -33,7 +33,9 @@ pub fn run(repo: &Repo, force: bool) -> Result<()> {
                     skipped += 1;
                 }
                 Outcome::MissingInStore => {
-                    eprintln!("  missing    shared/{entry}  (the manifest gives it, the store does not have it)");
+                    eprintln!(
+                        "  missing    shared/{entry}  (the manifest gives it, the store does not have it)"
+                    );
                     skipped += 1;
                 }
                 Outcome::AlreadyLinked => {}
@@ -44,7 +46,9 @@ pub fn run(repo: &Repo, force: bool) -> Result<()> {
     if changes == 0 && skipped == 0 {
         eprintln!("each worktree is correct");
     } else if skipped > 0 {
-        eprintln!("{changes} link(s) made. {skipped} path(s) need your attention. use --force to replace them");
+        eprintln!(
+            "{changes} link(s) made. {skipped} path(s) need your attention. use --force to replace them"
+        );
     }
     Ok(())
 }

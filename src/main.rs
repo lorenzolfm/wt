@@ -70,10 +70,7 @@ enum Command {
     },
 
     /// Clone a repository into the .bare layout
-    Clone {
-        url: String,
-        dir: Option<String>,
-    },
+    Clone { url: String, dir: Option<String> },
 
     /// Print the shell integration
     ShellInit {
@@ -95,7 +92,13 @@ fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().collect();
     let invoked_as = argv
         .first()
-        .map(|a| Path::new(a).file_name().unwrap_or_default().to_string_lossy().into_owned())
+        .map(|a| {
+            Path::new(a)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        })
         .unwrap_or_default();
     if invoked_as == "post-checkout" {
         return ExitCode::from(hook::run_as_hook(&argv[1..]) as u8);

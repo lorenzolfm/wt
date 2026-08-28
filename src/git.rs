@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -10,7 +10,7 @@ pub fn out(dir: &Path, args: &[&str]) -> Result<String> {
         .arg(dir)
         .args(args)
         .output()
-        .with_context(|| format!("could not run `git {}`", args.join(" ")))?;
+        .with_context(|| format!("wt cannot run `git {}`", args.join(" ")))?;
     if !o.status.success() {
         bail!(
             "git {} failed: {}",
@@ -41,14 +41,14 @@ pub fn passthrough(dir: &Path, args: &[&str]) -> Result<()> {
     let err: OwnedFd = std::io::stderr()
         .as_fd()
         .try_clone_to_owned()
-        .context("duplicating stderr")?;
+        .context("wt cannot make a copy of the error output")?;
     let st = Command::new("git")
         .arg("-C")
         .arg(dir)
         .args(args)
         .stdout(Stdio::from(err))
         .status()
-        .with_context(|| format!("could not run `git {}`", args.join(" ")))?;
+        .with_context(|| format!("wt cannot run `git {}`", args.join(" ")))?;
     if !st.success() {
         bail!("git {} failed", args.join(" "));
     }

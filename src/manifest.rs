@@ -19,13 +19,14 @@ impl Manifest {
             return Ok(Manifest::default());
         }
         let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+            .with_context(|| format!("wt cannot read {}", path.display()))?;
+        toml::from_str(&text)
+            .with_context(|| format!("wt cannot read the format of {}", path.display()))
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
         let body = toml::to_string_pretty(self)?;
-        std::fs::write(path, body).with_context(|| format!("writing {}", path.display()))
+        std::fs::write(path, body).with_context(|| format!("wt cannot write {}", path.display()))
     }
 
     pub fn contains(&self, entry: &str) -> bool {

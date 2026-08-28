@@ -43,7 +43,7 @@ pub fn seed_entry(shared: &Path, worktree: &Path, entry: &str, force: bool) -> R
             link(&src, &dst)?;
             Ok(Outcome::Linked)
         }
-        Err(e) => Err(e).with_context(|| format!("stat {}", dst.display())),
+        Err(e) => Err(e).with_context(|| format!("wt cannot read the path {}", dst.display())),
         Ok(md) if md.file_type().is_symlink() => {
             if fs::read_link(&dst).ok().as_deref() == Some(src.as_path()) {
                 Ok(Outcome::AlreadyLinked)
@@ -72,10 +72,15 @@ pub fn seed_entry(shared: &Path, worktree: &Path, entry: &str, force: bool) -> R
 fn link(src: &Path, dst: &Path) -> Result<()> {
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
+            .with_context(|| format!("wt cannot make the directory {}", parent.display()))?;
     }
-    std::os::unix::fs::symlink(src, dst)
-        .with_context(|| format!("linking {} -> {}", dst.display(), src.display()))
+    std::os::unix::fs::symlink(src, dst).with_context(|| {
+        format!(
+            "wt cannot make the link {} -> {}",
+            dst.display(),
+            src.display()
+        )
+    })
 }
 
 fn remove(path: &Path) -> Result<()> {
@@ -85,7 +90,7 @@ fn remove(path: &Path) -> Result<()> {
     } else {
         fs::remove_file(path)
     }
-    .with_context(|| format!("removing {}", path.display()))
+    .with_context(|| format!("wt cannot remove {}", path.display()))
 }
 
 /// Compare two paths. For a file, compare the bytes. For a directory,

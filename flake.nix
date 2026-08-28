@@ -1,46 +1,100 @@
 {
-  description = "Git worktrees, plus the ignored files they must share";
+  description = "Git worktrees, plus the files that git ignores";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    flake-utils.url = "github:numtide/flake-utils";
+    flake-parts.url = "github:hercules-ci/flake-parts";
+    rust-overlay.url = "github:oxalica/rust-overlay";
+    crane.url = "github:ipetkov/crane";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
-      let
-        pkgs = import nixpkgs { inherit system; };
-      in
-      {
-        packages.default = pkgs.rustPlatform.buildRustPackage {
-          pname = "wt";
-          version = "0.1.0";
-          src = ./.;
-          cargoLock.lockFile = ./Cargo.lock;
+  outputs = inputs @ {
+    flake-parts,
+    nixpkgs,
+    rust-overlay,
+    crane,
+    ...
+  }:
+    flake-parts.lib.mkFlake {inherit inputs;} {
+      systems = [
+        "x86_64-linux"
+        "aarch64-darwin"
+      ];
 
-          # wt calls the git binary. Tests need it too.
-          nativeCheckInputs = [ pkgs.git ];
+      perSystem = {
+        system,
+        pkgs,
+        ...
+      }: let
+        craneLib = (crane.mkLib pkgs).overrideToolchain (p:
+          p.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml);
 
-          meta = {
-            description = "Git worktrees, plus the ignored files they must share";
-            homepage = "https://github.com/lorenzolfm/wt";
-            license = pkgs.lib.licenses.mit;
-            mainProgram = "wt";
-            platforms = pkgs.lib.platforms.unix;
-          };
+        src = craneLib.cleanCargoSource ./.;
+
+        commonArgs = {
+          inherit src;
+          strictDeps = true;
+
+          # wt runs the git binary. The tests need it on PATH.
+          nativeCheckInputs = [pkgs.git];
         };
 
-        devShells.default = pkgs.mkShell {
+        # Build only the dependencies, so CI can cache that work.
+        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+
+        wt = craneLib.buildPackage (commonArgs
+          // {
+            inherit cargoArtifacts;
+
+            pname = "wt";
+
+            meta = {
+              description = "Git worktrees, plus the files that git ignores";
+              homepage = "https://github.com/lorenzolfm/wt";
+              license = pkgs.lib.licenses.mit;
+              mainProgram = "wt";
+              platforms = pkgs.lib.platforms.unix;
+            };
+          });
+      in {
+        _module.args.pkgs = import nixpkgs {
+          inherit system;
+          overlays = [(import rust-overlay)];
+        };
+
+        checks = {
+          inherit wt;
+
+          # Separate derivations, so a lint failure blocks CI without it
+          # blocking a user who only wants to build the crate.
+          wt-clippy = craneLib.cargoClippy (commonArgs
+            // {
+              inherit cargoArtifacts;
+              cargoClippyExtraArgs = "--all-targets -- --deny warnings";
+            });
+
+          wt-fmt = craneLib.cargoFmt {inherit src;};
+        };
+
+        packages.default = wt;
+
+        apps.default = {
+          type = "app";
+          program = "${pkgs.lib.getExe wt}";
+        };
+
+        devShells.default = craneLib.devShell {
           packages = with pkgs; [
-            cargo
-            rustc
-            clippy
-            rustfmt
-            rust-analyzer
+            cargo-nextest
             git
           ];
+
+          shellHook = ''
+            echo "  Rust: $(rustc --version)"
+          '';
         };
 
-        formatter = pkgs.nixpkgs-fmt;
-      });
+        formatter = pkgs.alejandra;
+      };
+    };
 }

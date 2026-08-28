@@ -1,6 +1,6 @@
 use crate::git;
 use crate::repo::Repo;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 /// Remove a worktree with `git worktree remove`. Then delete its branch.
 ///
@@ -32,7 +32,10 @@ pub fn run(repo: &Repo, target: &str, force: bool) -> Result<()> {
     args.push(&path);
     // Git prints the reason. Do not print it a second time.
     if git::passthrough(&repo.common, &args).is_err() {
-        bail!("wt cannot remove {}. use --force to remove it", found.name());
+        bail!(
+            "wt cannot remove {}. use --force to remove it",
+            found.name()
+        );
     }
     eprintln!("  removed    {}", found.name());
 

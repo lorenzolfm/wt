@@ -1,6 +1,6 @@
 use crate::git;
 use crate::repo::Repo;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::PathBuf;
 
@@ -12,9 +12,7 @@ use std::path::PathBuf;
 ///   <name>/.git       the text `gitdir: ./.bare`
 ///   <name>/<default>  the first worktree
 pub fn run(url: &str, dir: Option<&str>) -> Result<()> {
-    let name = dir
-        .map(str::to_string)
-        .unwrap_or_else(|| default_name(url));
+    let name = dir.map(str::to_string).unwrap_or_else(|| default_name(url));
     let cwd = std::env::current_dir()?;
     let container = cwd.join(&name);
     if container.exists() {
@@ -27,7 +25,7 @@ pub fn run(url: &str, dir: Option<&str>) -> Result<()> {
     git::passthrough(&cwd, &["clone", "--bare", url, &bare_str])?;
 
     fs::write(container.join(".git"), "gitdir: ./.bare\n")
-        .context("writing the .git pointer file")?;
+        .context("wt cannot write the .git file")?;
 
     // A bare clone has no fetch refspec. The refs below refs/remotes/origin
     // therefore stay empty, and `wt add` cannot find a remote branch.

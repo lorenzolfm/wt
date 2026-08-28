@@ -1,6 +1,6 @@
 use crate::git;
 use crate::manifest::Manifest;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -32,8 +32,11 @@ impl Repo {
     pub fn discover(from: Option<&Path>) -> Result<Repo> {
         let cwd = std::env::current_dir()?;
         let start = from.unwrap_or(&cwd);
-        let common = git::out(start, &["rev-parse", "--path-format=absolute", "--git-common-dir"])
-            .with_context(|| format!("there is no git repository at {}", start.display()))?;
+        let common = git::out(
+            start,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )
+        .with_context(|| format!("there is no git repository at {}", start.display()))?;
         Ok(Repo {
             common: PathBuf::from(common),
         })
@@ -62,7 +65,12 @@ impl Repo {
     /// The directory for new worktrees. It is beside `.bare`, or it is the
     /// bare repository itself in the first layout.
     pub fn container(&self) -> PathBuf {
-        if self.common.file_name().map(|n| n == ".bare").unwrap_or(false) {
+        if self
+            .common
+            .file_name()
+            .map(|n| n == ".bare")
+            .unwrap_or(false)
+        {
             self.common
                 .parent()
                 .map(Path::to_path_buf)
@@ -80,18 +88,19 @@ impl Repo {
         let mut branch: Option<String> = None;
         let mut bare = false;
 
-        let mut flush = |path: &mut Option<PathBuf>, branch: &mut Option<String>, bare: &mut bool| {
-            if let Some(p) = path.take()
-                && !*bare
-            {
-                found.push(Worktree {
-                    path: p,
-                    branch: branch.take(),
-                });
-            }
-            *branch = None;
-            *bare = false;
-        };
+        let mut flush =
+            |path: &mut Option<PathBuf>, branch: &mut Option<String>, bare: &mut bool| {
+                if let Some(p) = path.take()
+                    && !*bare
+                {
+                    found.push(Worktree {
+                        path: p,
+                        branch: branch.take(),
+                    });
+                }
+                *branch = None;
+                *bare = false;
+            };
 
         for line in text.lines() {
             if line.is_empty() {
@@ -111,17 +120,24 @@ impl Repo {
 
     /// The base branch for a new branch. It comes from the HEAD of the remote.
     pub fn default_base(&self) -> Result<String> {
-        if let Ok(r) = git::out(&self.common, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
-            && !r.is_empty()
+        if let Ok(r) = git::out(
+            &self.common,
+            &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        ) && !r.is_empty()
         {
             return Ok(r);
         }
         for candidate in ["origin/main", "origin/master"] {
-            if git::ok(&self.common, &["rev-parse", "--verify", "--quiet", candidate]) {
+            if git::ok(
+                &self.common,
+                &["rev-parse", "--verify", "--quiet", candidate],
+            ) {
                 return Ok(candidate.to_string());
             }
         }
-        bail!("cannot determine a base branch: origin/HEAD is unset and neither origin/main nor origin/master exists")
+        bail!(
+            "wt cannot find a base branch. origin/HEAD is not set, and neither origin/main nor origin/master is present"
+        )
     }
 
     pub fn require_managed(&self) -> Result<()> {

@@ -147,8 +147,14 @@ ln -sf "$PWD/target/release/wt" ~/.local/bin/wt
 nix profile install github:lorenzolfm/wt
 ```
 
+The flake pins the Rust toolchain with `rust-toolchain.toml`. It builds the
+program with crane.
+
 For a development shell, use `nix develop`. The repository contains an `.envrc`
 file for direnv.
+
+The command `nix flake check` builds the program. It also runs clippy and it
+examines the format of the code. Clippy refuses each warning.
 
 ### Shell integration
 

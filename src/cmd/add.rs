@@ -1,7 +1,7 @@
 use crate::git;
 use crate::hook;
 use crate::repo::Repo;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,7 +23,9 @@ pub fn run(repo: &Repo, branch: &str, dir: Option<&str>, fetch: Fetch) -> Result
         eprintln!("warning: {w}");
     }
 
-    let name = dir.map(str::to_string).unwrap_or_else(|| branch.replace('/', "-"));
+    let name = dir
+        .map(str::to_string)
+        .unwrap_or_else(|| branch.replace('/', "-"));
     let dest: PathBuf = repo.container().join(&name);
     if dest.exists() {
         bail!("{} is already present", dest.display());
@@ -94,7 +96,12 @@ fn track_args(dest: &str, branch: &str, remote_ref: &str) -> Vec<String> {
 fn has_local(repo: &Repo, branch: &str) -> bool {
     git::ok(
         &repo.common,
-        &["show-ref", "--verify", "--quiet", &format!("refs/heads/{branch}")],
+        &[
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
     )
 }
 

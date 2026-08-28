@@ -1,7 +1,7 @@
 use crate::git;
 use crate::repo::Repo;
-use crate::seed::{seed_entry, Outcome};
-use anyhow::{bail, Context, Result};
+use crate::seed::{Outcome, seed_entry};
+use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -69,8 +69,12 @@ fn share_one(
         fs::create_dir_all(parent)?;
     }
     fs::rename(&source, &stored)
-        .with_context(|| format!("moving {} into the store", source.display()))?;
-    eprintln!("  moved      {} -> shared/{}", display_rel(toplevel, &source), entry);
+        .with_context(|| format!("wt cannot move {} into the store", source.display()))?;
+    eprintln!(
+        "  moved      {} -> shared/{}",
+        display_rel(toplevel, &source),
+        entry
+    );
 
     manifest.insert(&entry);
 
@@ -113,7 +117,7 @@ fn relative_entry(toplevel: &Path, cwd: &Path, raw: &str) -> Result<String> {
     }
     let rel = normal
         .strip_prefix(toplevel)
-        .with_context(|| format!("{raw} is outside the worktree at {}", toplevel.display()))?;
+        .with_context(|| format!("{raw} is not in the worktree at {}", toplevel.display()))?;
     if rel.as_os_str().is_empty() {
         bail!("wt cannot share the top directory of the worktree");
     }

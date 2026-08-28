@@ -1,0 +1,11 @@
+[toolchain]
+channel = "1.98.0"
+profile = "minimal"
+components = [
+    "cargo",
+    "clippy",
+    "rust-analyzer",
+    "rust-std",
+    "rustc",
+    "rustfmt",
+]
