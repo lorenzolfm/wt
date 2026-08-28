@@ -44,6 +44,9 @@ enum Command {
     /// Print each worktree, its branch and the condition of its links
     List,
 
+    /// Change to a worktree, by directory name or by branch name
+    Cd { worktree: String },
+
     /// Compare each worktree with the config and make the links
     Sync {
         /// Replace a file that is different. The default is to keep it
@@ -132,6 +135,7 @@ fn dispatch() -> Result<()> {
                 Command::Init => cmd::init::run(&repo),
                 Command::Share { paths, force } => cmd::share::run(&repo, &paths, force),
                 Command::List => cmd::list::run(&repo),
+                Command::Cd { worktree } => cmd::cd::run(&repo, &worktree),
                 Command::Sync { force } => cmd::sync::run(&repo, force),
                 Command::Add {
                     branch,

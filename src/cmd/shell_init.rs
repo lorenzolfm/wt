@@ -21,7 +21,7 @@ const FISH: &str = r#"# wt shell integration -- add to config.fish with:
 
 function wt --wraps wt --description 'git worktree manager'
     switch "$argv[1]"
-        case add clone
+        case add clone cd
             set -l dest (command wt $argv)
             test -n "$dest" -a -d "$dest"; and cd $dest
         case '*'
@@ -34,6 +34,7 @@ complete -c wt -n __fish_use_subcommand -a init       -d 'make the store, the co
 complete -c wt -n __fish_use_subcommand -a share      -d 'move ignored paths into the store and make the links'
 complete -c wt -n __fish_use_subcommand -a add        -d 'make a worktree for a branch'
 complete -c wt -n __fish_use_subcommand -a delete     -d 'remove a worktree and delete its branch'
+complete -c wt -n __fish_use_subcommand -a cd         -d 'change to a worktree'
 complete -c wt -n __fish_use_subcommand -a list       -d 'print each worktree, its branch and its links'
 complete -c wt -n __fish_use_subcommand -a sync       -d 'compare each worktree with the config and make the links'
 complete -c wt -n __fish_use_subcommand -a clone      -d 'clone a repository into the .bare layout'
@@ -41,6 +42,7 @@ complete -c wt -n __fish_use_subcommand -a shell-init -d 'print the shell integr
 
 complete -c wt -n '__fish_seen_subcommand_from add'    -a '(command wt __branches 2>/dev/null)'
 complete -c wt -n '__fish_seen_subcommand_from delete' -a '(command wt __worktrees 2>/dev/null)'
+complete -c wt -n '__fish_seen_subcommand_from cd'     -a '(command wt __worktrees 2>/dev/null)'
 
 # `complete -c wt -f` above stops file completion for the whole command, so
 # each subcommand that takes a path must ask for it again with -F.

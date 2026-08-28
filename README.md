@@ -76,6 +76,16 @@ local branch while a remote branch with the same name is already present.
 Use the option `--no-fetch` to stay offline. Use the option `--fetch` to do a
 fetch first.
 
+### Go to a worktree
+
+```sh
+wt cd deny
+```
+
+The command accepts the name of the worktree directory. It also accepts the
+name of the branch, because a branch can move after you make the worktree.
+The start of a directory name is sufficient when only one worktree matches.
+
 ### See the worktrees
 
 ```sh
@@ -122,6 +132,7 @@ Use the option `--force` to replace a file that is different.
 | `wt init` | Make the store, the config entry and the hook. Move no files. |
 | `wt share <path>…` | Move ignored paths into the store. Link them in each worktree. |
 | `wt add <branch> [dir]` | Make a worktree for a branch. |
+| `wt cd <worktree>` | Print the path of a worktree. The shell integration then changes directory. |
 | `wt list` | Print each worktree, its branch and the condition of its links. |
 | `wt sync` | Compare each worktree with the config. Make the links that are absent. |
 | `wt delete <worktree>` | Remove a worktree. Delete its branch if git merged the branch. |
@@ -177,6 +188,7 @@ The integration also gives completion, and it changes the directory after
 |---|---|
 | `wt add <TAB>` | each local branch and each remote branch |
 | `wt delete <TAB>` | each worktree |
+| `wt cd <TAB>` | each worktree |
 | `wt share <TAB>` | each ignored path that the config does not have, and files |
 
 ## License

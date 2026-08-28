@@ -1,4 +1,5 @@
 pub mod add;
+pub mod cd;
 pub mod clone;
 pub mod completions;
 pub mod delete;
