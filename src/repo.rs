@@ -21,7 +21,7 @@ impl Worktree {
 /// A worktree-bearing repository, identified by its common dir.
 ///
 /// Handles both layouts transparently, since `--git-common-dir` resolves
-/// either one: `bipa.git` (root-style) or `despesas.git/.bare` (bare-style).
+/// either one: `repo.git` (root-style) or `repo/.bare` (bare-style).
 #[derive(Debug, Clone)]
 pub struct Repo {
     pub common: PathBuf,
