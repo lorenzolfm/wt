@@ -86,6 +86,9 @@ enum Command {
 
     #[command(hide = true, name = "__worktrees")]
     Worktrees,
+
+    #[command(hide = true, name = "__shareable")]
+    Shareable,
 }
 
 fn main() -> ExitCode {
@@ -146,8 +149,9 @@ fn dispatch() -> Result<()> {
                     cmd::add::run(&repo, &branch, dir.as_deref(), mode)
                 }
                 Command::Delete { worktree, force } => cmd::delete::run(&repo, &worktree, force),
-                Command::Branches => cmd::delete::branches(&repo),
-                Command::Worktrees => cmd::delete::names(&repo),
+                Command::Branches => cmd::completions::branches(&repo),
+                Command::Worktrees => cmd::completions::worktrees(&repo),
+                Command::Shareable => cmd::completions::shareable(&repo),
                 Command::ShellInit { .. } | Command::Clone { .. } => unreachable!(),
             }
         }

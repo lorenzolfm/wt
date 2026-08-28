@@ -1,5 +1,6 @@
 pub mod add;
 pub mod clone;
+pub mod completions;
 pub mod delete;
 pub mod init;
 pub mod list;

@@ -41,4 +41,11 @@ complete -c wt -n __fish_use_subcommand -a shell-init -d 'print the shell integr
 
 complete -c wt -n '__fish_seen_subcommand_from add'    -a '(command wt __branches 2>/dev/null)'
 complete -c wt -n '__fish_seen_subcommand_from delete' -a '(command wt __worktrees 2>/dev/null)'
+
+# `complete -c wt -f` above stops file completion for the whole command, so
+# each subcommand that takes a path must ask for it again with -F.
+complete -c wt -n '__fish_seen_subcommand_from share' -F \
+    -a '(command wt __shareable 2>/dev/null)'
+complete -c wt -n '__fish_seen_subcommand_from clone' -F
+complete -c wt -l repo -r -F -d 'act on this repository'
 "#;

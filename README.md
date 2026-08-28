@@ -170,7 +170,14 @@ Add this line to `config.fish`:
 wt shell-init fish | source
 ```
 
-Gives completion for branch names and worktree names and `cd` into the worktree.
+The integration also gives completion, and it changes the directory after
+`wt add` and `wt clone`:
+
+| Position | Candidates |
+|---|---|
+| `wt add <TAB>` | each local branch and each remote branch |
+| `wt delete <TAB>` | each worktree |
+| `wt share <TAB>` | each ignored path that the config does not have, and files |
 
 ## License
 

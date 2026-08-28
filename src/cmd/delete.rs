@@ -47,35 +47,3 @@ pub fn run(repo: &Repo, target: &str, force: bool) -> Result<()> {
     }
     Ok(())
 }
-
-/// Print the name of each worktree. The shell uses this list for completion.
-pub fn names(repo: &Repo) -> Result<()> {
-    for w in repo.worktrees()? {
-        println!("{}", w.name());
-    }
-    Ok(())
-}
-
-/// Print each local branch name and each remote branch name.
-pub fn branches(repo: &Repo) -> Result<()> {
-    let text = git::out(
-        &repo.common,
-        &[
-            "for-each-ref",
-            "--format=%(refname:short)",
-            "refs/heads",
-            "refs/remotes/origin",
-        ],
-    )?;
-    let mut seen = std::collections::BTreeSet::new();
-    for line in text.lines() {
-        let name = line.strip_prefix("origin/").unwrap_or(line);
-        if name != "HEAD" && !name.is_empty() {
-            seen.insert(name.to_string());
-        }
-    }
-    for n in seen {
-        println!("{n}");
-    }
-    Ok(())
-}
