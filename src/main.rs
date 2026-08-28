@@ -1,7 +1,7 @@
 mod cmd;
+mod config;
 mod git;
 mod hook;
-mod manifest;
 mod repo;
 mod seed;
 
@@ -28,7 +28,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Make the store, the manifest and the hook
+    /// Make the store, the config entry and the hook
     Init,
 
     /// Move ignored paths into the store and make the links
@@ -41,7 +41,10 @@ enum Command {
         force: bool,
     },
 
-    /// Compare each worktree with the manifest and make the links
+    /// Print each worktree, its branch and the condition of its links
+    List,
+
+    /// Compare each worktree with the config and make the links
     Sync {
         /// Replace a file that is different. The default is to keep it
         #[arg(long)]
@@ -125,6 +128,7 @@ fn dispatch() -> Result<()> {
             match other {
                 Command::Init => cmd::init::run(&repo),
                 Command::Share { paths, force } => cmd::share::run(&repo, &paths, force),
+                Command::List => cmd::list::run(&repo),
                 Command::Sync { force } => cmd::sync::run(&repo, force),
                 Command::Add {
                     branch,

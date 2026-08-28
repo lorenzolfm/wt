@@ -133,7 +133,7 @@ fn report(shared: &Path, worktree: &Path, entries: &[String]) -> Result<()> {
                 eprintln!("wt: {entry}: a different file is present. wt kept it")
             }
             Outcome::MissingInStore => {
-                eprintln!("wt: {entry}: the manifest gives this path, the store does not have it")
+                eprintln!("wt: {entry}: the config gives this path, the store does not have it")
             }
             _ => {}
         }

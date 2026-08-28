@@ -2,7 +2,7 @@ use crate::repo::Repo;
 use crate::seed::{Outcome, seed_entry};
 use anyhow::Result;
 
-/// Compare each worktree with the manifest and make the links that are
+/// Compare each worktree with the config and make the links that are
 /// absent. You can run this command many times. It prints nothing if each
 /// worktree is correct.
 pub fn run(repo: &Repo, force: bool) -> Result<()> {
@@ -34,7 +34,7 @@ pub fn run(repo: &Repo, force: bool) -> Result<()> {
                 }
                 Outcome::MissingInStore => {
                     eprintln!(
-                        "  missing    shared/{entry}  (the manifest gives it, the store does not have it)"
+                        "  missing    shared/{entry}  (the config gives it, the store does not have it)"
                     );
                     skipped += 1;
                 }

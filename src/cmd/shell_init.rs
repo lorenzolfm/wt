@@ -30,11 +30,12 @@ function wt --wraps wt --description 'git worktree manager'
 end
 
 complete -c wt -f
-complete -c wt -n __fish_use_subcommand -a init       -d 'make the store, the manifest and the hook'
+complete -c wt -n __fish_use_subcommand -a init       -d 'make the store, the config entry and the hook'
 complete -c wt -n __fish_use_subcommand -a share      -d 'move ignored paths into the store and make the links'
 complete -c wt -n __fish_use_subcommand -a add        -d 'make a worktree for a branch'
 complete -c wt -n __fish_use_subcommand -a delete     -d 'remove a worktree and delete its branch'
-complete -c wt -n __fish_use_subcommand -a sync       -d 'compare each worktree with the manifest and make the links'
+complete -c wt -n __fish_use_subcommand -a list       -d 'print each worktree, its branch and its links'
+complete -c wt -n __fish_use_subcommand -a sync       -d 'compare each worktree with the config and make the links'
 complete -c wt -n __fish_use_subcommand -a clone      -d 'clone a repository into the .bare layout'
 complete -c wt -n __fish_use_subcommand -a shell-init -d 'print the shell integration'
 

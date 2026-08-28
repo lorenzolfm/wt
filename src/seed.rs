@@ -25,6 +25,56 @@ impl Outcome {
     }
 }
 
+/// The condition of one manifest path in one worktree.
+///
+/// `inspect` finds the condition and changes nothing. `seed_entry` then acts
+/// on it. The two are separate, so a command that only reports (`wt list`)
+/// cannot change a worktree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum State {
+    /// A link to the store is present.
+    Linked,
+    /// The path is empty.
+    Absent,
+    /// A link is present, but it points somewhere else.
+    WrongLink,
+    /// A file is present, and its bytes are the same as the store.
+    SameFile,
+    /// A file is present, and its bytes are different.
+    DifferentFile,
+    /// The store does not contain the path.
+    MissingInStore,
+}
+
+/// Find the condition of one manifest path. This function changes nothing.
+pub fn inspect(shared: &Path, worktree: &Path, entry: &str) -> Result<State> {
+    let src = shared.join(entry);
+    let dst = worktree.join(entry);
+
+    if !src.exists() {
+        return Ok(State::MissingInStore);
+    }
+
+    match fs::symlink_metadata(&dst) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(State::Absent),
+        Err(e) => Err(e).with_context(|| format!("wt cannot read the path {}", dst.display())),
+        Ok(md) if md.file_type().is_symlink() => {
+            if fs::read_link(&dst).ok().as_deref() == Some(src.as_path()) {
+                Ok(State::Linked)
+            } else {
+                Ok(State::WrongLink)
+            }
+        }
+        Ok(_) => {
+            if same_content(&src, &dst)? {
+                Ok(State::SameFile)
+            } else {
+                Ok(State::DifferentFile)
+            }
+        }
+    }
+}
+
 /// Compare one manifest path in one worktree, and make a link.
 ///
 /// The tool must not destroy a file that is different from the file in the
@@ -34,31 +84,25 @@ pub fn seed_entry(shared: &Path, worktree: &Path, entry: &str, force: bool) -> R
     let src = shared.join(entry);
     let dst = worktree.join(entry);
 
-    if !src.exists() {
-        return Ok(Outcome::MissingInStore);
-    }
-
-    match fs::symlink_metadata(&dst) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+    match inspect(shared, worktree, entry)? {
+        State::MissingInStore => Ok(Outcome::MissingInStore),
+        State::Linked => Ok(Outcome::AlreadyLinked),
+        State::Absent => {
             link(&src, &dst)?;
             Ok(Outcome::Linked)
         }
-        Err(e) => Err(e).with_context(|| format!("wt cannot read the path {}", dst.display())),
-        Ok(md) if md.file_type().is_symlink() => {
-            if fs::read_link(&dst).ok().as_deref() == Some(src.as_path()) {
-                Ok(Outcome::AlreadyLinked)
-            } else {
-                fs::remove_file(&dst)?;
-                link(&src, &dst)?;
-                Ok(Outcome::Linked)
-            }
+        State::WrongLink => {
+            fs::remove_file(&dst)?;
+            link(&src, &dst)?;
+            Ok(Outcome::Linked)
         }
-        Ok(_) => {
-            if same_content(&src, &dst)? {
-                remove(&dst)?;
-                link(&src, &dst)?;
-                Ok(Outcome::Replaced)
-            } else if force {
+        State::SameFile => {
+            remove(&dst)?;
+            link(&src, &dst)?;
+            Ok(Outcome::Replaced)
+        }
+        State::DifferentFile => {
+            if force {
                 remove(&dst)?;
                 link(&src, &dst)?;
                 Ok(Outcome::Forced)
@@ -304,6 +348,65 @@ mod tests {
         write(&f.shared, "x", "AA");
         write(&f.worktree, "x", "A");
         assert!(!same_content(&f.shared.join("x"), &f.worktree.join("x")).unwrap());
+    }
+
+    #[test]
+    fn inspect_finds_each_condition_and_changes_nothing() {
+        let f = fixture();
+        write(&f.shared, ".env", "A");
+
+        assert_eq!(
+            inspect(&f.shared, &f.worktree, ".env").unwrap(),
+            State::Absent
+        );
+        // The report must not make the link.
+        assert!(!f.worktree.join(".env").exists());
+
+        write(&f.worktree, ".env", "A");
+        assert_eq!(
+            inspect(&f.shared, &f.worktree, ".env").unwrap(),
+            State::SameFile
+        );
+        assert!(
+            !fs::symlink_metadata(f.worktree.join(".env"))
+                .unwrap()
+                .is_symlink()
+        );
+
+        fs::write(f.worktree.join(".env"), "B").unwrap();
+        assert_eq!(
+            inspect(&f.shared, &f.worktree, ".env").unwrap(),
+            State::DifferentFile
+        );
+        assert_eq!(fs::read_to_string(f.worktree.join(".env")).unwrap(), "B");
+
+        fs::remove_file(f.worktree.join(".env")).unwrap();
+        seed_entry(&f.shared, &f.worktree, ".env", false).unwrap();
+        assert_eq!(
+            inspect(&f.shared, &f.worktree, ".env").unwrap(),
+            State::Linked
+        );
+    }
+
+    #[test]
+    fn inspect_finds_a_link_that_points_somewhere_else() {
+        let f = fixture();
+        write(&f.shared, ".env", "A");
+        let other = write(&f.shared, "other", "B");
+        std::os::unix::fs::symlink(&other, f.worktree.join(".env")).unwrap();
+        assert_eq!(
+            inspect(&f.shared, &f.worktree, ".env").unwrap(),
+            State::WrongLink
+        );
+    }
+
+    #[test]
+    fn inspect_reports_a_path_that_the_store_does_not_have() {
+        let f = fixture();
+        assert_eq!(
+            inspect(&f.shared, &f.worktree, ".env").unwrap(),
+            State::MissingInStore
+        );
     }
 
     #[test]

@@ -24,15 +24,15 @@ The command makes this structure:
 
 ```
 project/
-├── .bare/    the bare repository. It holds the store, the manifest and the hook
+├── .bare/    the bare repository. It holds the store and the hook
 ├── .git      the text `gitdir: ./.bare`
 └── main/     the first worktree
 ```
 
 ### Start with a repository that is already on your disk
 
-Go into a worktree of the repository. Make the store, the manifest and the
-hook:
+Go into a worktree of the repository. Make the store, the config entry and
+the hook:
 
 ```sh
 wt init
@@ -76,10 +76,19 @@ local branch while a remote branch with the same name is already present.
 Use the option `--no-fetch` to stay offline. Use the option `--fetch` to do a
 fetch first.
 
+### See the worktrees
+
+```sh
+wt list
+```
+
+The command prints each worktree, the branch it is on, and how many links are
+correct. It changes nothing.
+
 ### Repair the links
 
 The command `git clean -xdf` removes a link. A worktree can also be older than
-the manifest. The command `wt sync` makes each link that is absent:
+the config. The command `wt sync` makes each link that is absent:
 
 ```sh
 wt sync
@@ -110,22 +119,33 @@ Use the option `--force` to replace a file that is different.
 
 | Command | Function |
 |---|---|
-| `wt init` | Make the store, the manifest and the hook. Move no files. |
+| `wt init` | Make the store, the config entry and the hook. Move no files. |
 | `wt share <path>…` | Move ignored paths into the store. Link them in each worktree. |
 | `wt add <branch> [dir]` | Make a worktree for a branch. |
-| `wt sync` | Compare each worktree with the manifest. Make the links that are absent. |
+| `wt list` | Print each worktree, its branch and the condition of its links. |
+| `wt sync` | Compare each worktree with the config. Make the links that are absent. |
 | `wt delete <worktree>` | Remove a worktree. Delete its branch if git merged the branch. |
 | `wt clone <url> [dir]` | Clone into the `.bare` layout. Make the first worktree. |
 | `wt shell-init fish` | Print the shell integration. |
 
 ### Config file
 
-The manifest gives the list of shared paths:
+One global file holds the shared paths for each repository:
 
 ```toml
-# <common-directory>/worktree-shared.toml
+# ~/.config/wt/config.toml
+[repos."github.com/you/project"]
 link = [".env.override", ".auth", ".envrc"]
 ```
+
+The key is the remote URL in a normal form. Each form of the URL gives the
+same key, so one file is correct for SSH and for HTTPS, and on each machine.
+Put this file in your dotfiles to keep the list.
+
+`wt` reads `$XDG_CONFIG_HOME/wt/config.toml` when that variable is set.
+
+The file holds no secret. It holds only path names. The content stays in the
+store, and the store stays in the repository at `<common-directory>/shared/`.
 
 ## Installation
 

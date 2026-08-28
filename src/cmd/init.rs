@@ -1,10 +1,10 @@
+use crate::config::Config;
 use crate::hook;
-use crate::manifest::Manifest;
 use crate::repo::Repo;
 use anyhow::Result;
 use std::fs;
 
-/// Make the store, the manifest and the hook. This command moves no files.
+/// Make the store, the config entry and the hook. This command moves no files.
 pub fn run(repo: &Repo) -> Result<()> {
     let mut changed = false;
 
@@ -15,10 +15,12 @@ pub fn run(repo: &Repo) -> Result<()> {
         changed = true;
     }
 
-    let manifest_path = repo.manifest_path();
-    if !manifest_path.exists() {
-        Manifest::default().save(&manifest_path)?;
-        eprintln!("  created    worktree-shared.toml");
+    let key = repo.key()?;
+    let mut config = Config::load()?;
+    if config.repo(&key).is_none() {
+        config.repo_mut(&key);
+        config.save()?;
+        eprintln!("  added      {key}  to {}", Config::path()?.display());
         changed = true;
     }
 

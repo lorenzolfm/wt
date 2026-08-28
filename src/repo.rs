@@ -1,5 +1,5 @@
+use crate::config::{self, Config, RepoConfig};
 use crate::git;
-use crate::manifest::Manifest;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
@@ -46,20 +46,36 @@ impl Repo {
         self.common.join("shared")
     }
 
-    pub fn manifest_path(&self) -> PathBuf {
-        self.common.join("worktree-shared.toml")
-    }
-
     pub fn hook_path(&self) -> PathBuf {
         self.common.join("hooks").join("post-checkout")
     }
 
-    pub fn is_managed(&self) -> bool {
-        self.manifest_path().exists()
+    /// The key for this repository in the global config: its remote URL in
+    /// a normal form.
+    pub fn key(&self) -> Result<String> {
+        let url = git::out(&self.common, &["remote", "get-url", "origin"]).with_context(|| {
+            format!(
+                "{} has no remote named origin\n  wt uses the remote URL as the key in {}",
+                self.common.display(),
+                Config::path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "the config file".into())
+            )
+        })?;
+        Ok(config::key_from_url(&url))
     }
 
-    pub fn manifest(&self) -> Result<Manifest> {
-        Manifest::load(&self.manifest_path())
+    pub fn is_managed(&self) -> bool {
+        match (self.key(), Config::load()) {
+            (Ok(key), Ok(cfg)) => cfg.repo(&key).is_some(),
+            _ => false,
+        }
+    }
+
+    /// The shared paths for this repository, from the global config.
+    pub fn manifest(&self) -> Result<RepoConfig> {
+        let key = self.key()?;
+        Ok(Config::load()?.repo(&key).cloned().unwrap_or_default())
     }
 
     /// The directory for new worktrees. It is beside `.bare`, or it is the
@@ -143,7 +159,7 @@ impl Repo {
     pub fn require_managed(&self) -> Result<()> {
         if !self.is_managed() {
             bail!(
-                "wt does not control {}. the file worktree-shared.toml is not present\n  run `wt init` first",
+                "wt does not control {}\n  run `wt init` first",
                 self.common.display()
             );
         }

@@ -1,3 +1,4 @@
+use crate::config::Config;
 use crate::git;
 use crate::repo::Repo;
 use crate::seed::{Outcome, seed_entry};
@@ -10,16 +11,18 @@ pub fn run(repo: &Repo, paths: &[String], force: bool) -> Result<()> {
     repo.require_managed()?;
     let cwd = std::env::current_dir()?;
     let toplevel = PathBuf::from(git::out(&cwd, &["rev-parse", "--show-toplevel"])?);
-    let mut manifest = repo.manifest()?;
+    let key = repo.key()?;
+    let mut config = Config::load()?;
 
     for raw in paths {
-        match share_one(repo, &toplevel, &cwd, raw, &mut manifest, force) {
+        let entry = config.repo_mut(&key);
+        match share_one(repo, &toplevel, &cwd, raw, entry, force) {
             Ok(()) => {}
             Err(e) => eprintln!("error: {raw}: {e:#}"),
         }
     }
 
-    manifest.save(&repo.manifest_path())?;
+    config.save()?;
     Ok(())
 }
 
@@ -28,7 +31,7 @@ fn share_one(
     toplevel: &Path,
     cwd: &Path,
     raw: &str,
-    manifest: &mut crate::manifest::Manifest,
+    manifest: &mut crate::config::RepoConfig,
     force: bool,
 ) -> Result<()> {
     let entry = relative_entry(toplevel, cwd, raw)?;
@@ -36,7 +39,7 @@ fn share_one(
     let stored = repo.shared().join(&entry);
 
     if manifest.contains(&entry) {
-        bail!("the manifest contains this path");
+        bail!("the config file contains this path");
     }
 
     // Git supplies each tracked path. A link over a tracked path hides the
