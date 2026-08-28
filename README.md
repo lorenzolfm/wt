@@ -100,3 +100,7 @@ wt share .env.override .auth .envrc
 Copy mode (link-only for now; the manifest format reserves room for it),
 a delete-time classifier for unshared gitignored data, diagnostics beyond
 `sync`, a repo registry, and promoting a divergent worktree copy into the store.
+
+## License
+
+MIT

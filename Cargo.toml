@@ -3,6 +3,8 @@ name = "wt"
 version = "0.1.0"
 edition = "2021"
 description = "Git worktree manager with shared gitignored files"
+license = "MIT"
+repository = "https://github.com/lorenzolfm/wt"
 
 [dependencies]
 anyhow = "1"
