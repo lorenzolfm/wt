@@ -35,7 +35,7 @@ complete -c wt -n __fish_use_subcommand -a share      -d 'move ignored paths int
 complete -c wt -n __fish_use_subcommand -a add        -d 'make a worktree for a branch'
 complete -c wt -n __fish_use_subcommand -a delete     -d 'remove a worktree and delete its branch'
 complete -c wt -n __fish_use_subcommand -a cd         -d 'change to a worktree'
-complete -c wt -n __fish_use_subcommand -a list       -d 'print each worktree, its branch and its links'
+complete -c wt -n __fish_use_subcommand -a ls         -d 'print each worktree, its branch and its links'
 complete -c wt -n __fish_use_subcommand -a sync       -d 'compare each worktree with the config and make the links'
 complete -c wt -n __fish_use_subcommand -a clone      -d 'clone a repository into the .bare layout'
 complete -c wt -n __fish_use_subcommand -a shell-init -d 'print the shell integration'
