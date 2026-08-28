@@ -89,7 +89,7 @@ The start of a directory name is sufficient when only one worktree matches.
 ### See the worktrees
 
 ```sh
-wt list
+wt ls
 ```
 
 The command prints each worktree, the branch it is on, and how many links are
@@ -133,7 +133,7 @@ Use the option `--force` to replace a file that is different.
 | `wt share <path>…` | Move ignored paths into the store. Link them in each worktree. |
 | `wt add <branch> [dir]` | Make a worktree for a branch. |
 | `wt cd <worktree>` | Print the path of a worktree. The shell integration then changes directory. |
-| `wt list` | Print each worktree, its branch and the condition of its links. |
+| `wt ls` | Print each worktree, its branch and the condition of its links. |
 | `wt sync` | Compare each worktree with the config. Make the links that are absent. |
 | `wt delete <worktree>` | Remove a worktree. Delete its branch if git merged the branch. |
 | `wt clone <url> [dir]` | Clone into the `.bare` layout. Make the first worktree. |

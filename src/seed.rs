@@ -28,7 +28,7 @@ impl Outcome {
 /// The condition of one manifest path in one worktree.
 ///
 /// `inspect` finds the condition and changes nothing. `seed_entry` then acts
-/// on it. The two are separate, so a command that only reports (`wt list`)
+/// on it. The two are separate, so a command that only reports (`wt ls`)
 /// cannot change a worktree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {

@@ -42,7 +42,7 @@ enum Command {
     },
 
     /// Print each worktree, its branch and the condition of its links
-    List,
+    Ls,
 
     /// Change to a worktree, by directory name or by branch name
     Cd { worktree: String },
@@ -134,7 +134,7 @@ fn dispatch() -> Result<()> {
             match other {
                 Command::Init => cmd::init::run(&repo),
                 Command::Share { paths, force } => cmd::share::run(&repo, &paths, force),
-                Command::List => cmd::list::run(&repo),
+                Command::Ls => cmd::ls::run(&repo),
                 Command::Cd { worktree } => cmd::cd::run(&repo, &worktree),
                 Command::Sync { force } => cmd::sync::run(&repo, force),
                 Command::Add {

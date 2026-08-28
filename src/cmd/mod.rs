@@ -4,7 +4,7 @@ pub mod clone;
 pub mod completions;
 pub mod delete;
 pub mod init;
-pub mod list;
+pub mod ls;
 pub mod share;
 pub mod shell_init;
 pub mod sync;
