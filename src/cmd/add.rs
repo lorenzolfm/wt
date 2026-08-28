@@ -76,6 +76,11 @@ pub fn run(repo: &Repo, branch: &str, dir: Option<&str>, fetch: Fetch) -> Result
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     git::passthrough(&repo.common, &argv)?;
 
+    if crate::cmd::is_command(&name) {
+        eprintln!("warning: wt {name} runs the command {name}, not this worktree");
+        eprintln!("  use wt cd {name} to go to it");
+    }
+
     // The hook makes the links. The output gives the path to the shell.
     println!("{}", dest.display());
     Ok(())

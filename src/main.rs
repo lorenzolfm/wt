@@ -15,6 +15,7 @@ use std::process::ExitCode;
 #[command(
     name = "wt",
     about = "Git worktrees, plus the files that git ignores",
+    after_help = "wt <worktree> is the short form of wt cd <worktree>.",
     version
 )]
 struct Cli {
@@ -45,6 +46,9 @@ enum Command {
     Ls,
 
     /// Change to a worktree, by directory name or by branch name
+    ///
+    /// wt <worktree> is the short form. A command wins over a worktree with
+    /// the same name, so a worktree named ls needs the long form wt cd ls.
     Cd { worktree: String },
 
     /// Compare each worktree with the config and make the links
@@ -92,6 +96,10 @@ enum Command {
 
     #[command(hide = true, name = "__shareable")]
     Shareable,
+
+    /// `wt <worktree>` is the short form of `wt cd <worktree>`
+    #[command(external_subcommand)]
+    Bare(Vec<String>),
 }
 
 fn main() -> ExitCode {
@@ -156,6 +164,7 @@ fn dispatch() -> Result<()> {
                 Command::Branches => cmd::completions::branches(&repo),
                 Command::Worktrees => cmd::completions::worktrees(&repo),
                 Command::Shareable => cmd::completions::shareable(&repo),
+                Command::Bare(words) => cmd::cd::bare(&repo, &words),
                 Command::ShellInit { .. } | Command::Clone { .. } => unreachable!(),
             }
         }
