@@ -5,17 +5,17 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// Already a symlink pointing at the store.
+    /// A link to the store is already present.
     AlreadyLinked,
-    /// Nothing was there; link created.
+    /// The path was empty. The tool made a link.
     Linked,
-    /// A real copy with identical bytes was swapped for a link.
+    /// A file with the same bytes was present. The tool made a link.
     Replaced,
-    /// A divergent real copy was replaced because --force was given.
+    /// A different file was present. The tool replaced it because of `--force`.
     Forced,
-    /// A real copy differs from the store; left untouched.
+    /// A different file was present. The tool kept it.
     SkippedDivergent,
-    /// The manifest names an entry the store does not have.
+    /// The manifest gives a path, but the store does not contain it.
     MissingInStore,
 }
 
@@ -25,11 +25,11 @@ impl Outcome {
     }
 }
 
-/// Reconcile one manifest entry in one worktree.
+/// Compare one manifest path in one worktree, and make a link.
 ///
-/// The invariant: never destroy a real file whose contents differ from the
-/// store. Identical copies are safe to replace by definition -- the bytes
-/// survive at the link target.
+/// The tool must not destroy a file that is different from the file in the
+/// store. A file with the same bytes is safe to replace, because the bytes
+/// stay at the target of the link.
 pub fn seed_entry(shared: &Path, worktree: &Path, entry: &str, force: bool) -> Result<Outcome> {
     let src = shared.join(entry);
     let dst = worktree.join(entry);
@@ -88,7 +88,8 @@ fn remove(path: &Path) -> Result<()> {
     .with_context(|| format!("removing {}", path.display()))
 }
 
-/// Byte-for-byte for files, recursive name-and-content for directories.
+/// Compare two paths. For a file, compare the bytes. For a directory,
+/// compare the names and then compare each file.
 pub fn same_content(a: &Path, b: &Path) -> Result<bool> {
     let (ma, mb) = (fs::symlink_metadata(a)?, fs::symlink_metadata(b)?);
 

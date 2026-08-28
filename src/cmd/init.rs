@@ -4,7 +4,7 @@ use crate::repo::Repo;
 use anyhow::Result;
 use std::fs;
 
-/// Pure scaffolding: the store, the manifest, the hook. Never moves files.
+/// Make the store, the manifest and the hook. This command moves no files.
 pub fn run(repo: &Repo) -> Result<()> {
     let mut changed = false;
 
@@ -29,9 +29,9 @@ pub fn run(repo: &Repo) -> Result<()> {
     }
 
     if changed {
-        eprintln!("initialised {}", repo.common.display());
+        eprintln!("wt controls {}", repo.common.display());
     } else {
-        eprintln!("{} is already initialised", repo.common.display());
+        eprintln!("wt already controls {}", repo.common.display());
     }
     Ok(())
 }

@@ -2,7 +2,9 @@ use crate::repo::Repo;
 use crate::seed::{seed_entry, Outcome};
 use anyhow::Result;
 
-/// Reconcile every worktree against the manifest. Idempotent; quiet when clean.
+/// Compare each worktree with the manifest and make the links that are
+/// absent. You can run this command many times. It prints nothing if each
+/// worktree is correct.
 pub fn run(repo: &Repo, force: bool) -> Result<()> {
     repo.require_managed()?;
     if let Some(w) = crate::hook::check(repo) {
@@ -24,14 +26,14 @@ pub fn run(repo: &Repo, force: bool) -> Result<()> {
                 }
                 Outcome::SkippedDivergent => {
                     eprintln!(
-                        "  skipped    {}/{}  (real file, differs from store)",
+                        "  skipped    {}/{}  (a different file is present)",
                         wt.name(),
                         entry
                     );
                     skipped += 1;
                 }
                 Outcome::MissingInStore => {
-                    eprintln!("  missing    shared/{entry}  (listed in manifest, absent from store)");
+                    eprintln!("  missing    shared/{entry}  (the manifest gives it, the store does not have it)");
                     skipped += 1;
                 }
                 Outcome::AlreadyLinked => {}
@@ -40,9 +42,9 @@ pub fn run(repo: &Repo, force: bool) -> Result<()> {
     }
 
     if changes == 0 && skipped == 0 {
-        eprintln!("everything in sync");
+        eprintln!("each worktree is correct");
     } else if skipped > 0 {
-        eprintln!("{changes} linked, {skipped} needing attention (--force to overwrite)");
+        eprintln!("{changes} link(s) made. {skipped} path(s) need your attention. use --force to replace them");
     }
     Ok(())
 }

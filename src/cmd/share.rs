@@ -5,7 +5,7 @@ use anyhow::{bail, Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Move gitignored files into the store and link them back everywhere.
+/// Move ignored files into the store. Then make a link in each worktree.
 pub fn run(repo: &Repo, paths: &[String], force: bool) -> Result<()> {
     repo.require_managed()?;
     let cwd = std::env::current_dir()?;
@@ -36,33 +36,33 @@ fn share_one(
     let stored = repo.shared().join(&entry);
 
     if manifest.contains(&entry) {
-        bail!("already shared (in the manifest)");
+        bail!("the manifest contains this path");
     }
 
-    // Tracked paths are delivered by git itself; sharing them would shadow
-    // the checkout. This also catches `wt share terraform` when only
-    // terraform/terraform.tfvars is ignored.
+    // Git supplies each tracked path. A link over a tracked path hides the
+    // checkout. This test also refuses `wt share terraform` when git ignores
+    // only terraform/terraform.tfvars.
     let tracked = git::out(toplevel, &["ls-files", "--", &entry])?;
     if !tracked.is_empty() {
         let first = tracked.lines().next().unwrap_or_default();
         bail!(
-            "contains tracked files (e.g. {first})\n  \
-             git already checks those out; share the ignored leaf instead"
+            "this path contains a tracked file, for example {first}\n  \
+             git supplies each tracked file. give the ignored path instead"
         );
     }
 
     if !git::ok(toplevel, &["check-ignore", "-q", "--", &entry]) {
-        bail!("not gitignored -- wt only manages ignored paths");
+        bail!("git does not ignore this path. wt controls only the ignored paths");
     }
 
     if !source.exists() {
-        bail!("no such path in {}", toplevel.display());
+        bail!("this path is not in {}", toplevel.display());
     }
     if fs::symlink_metadata(&source)?.file_type().is_symlink() {
-        bail!("already a symlink");
+        bail!("this path is already a link");
     }
     if stored.exists() {
-        bail!("shared/{entry} already exists in the store");
+        bail!("the store already contains shared/{entry}");
     }
 
     if let Some(parent) = stored.parent() {
@@ -74,14 +74,14 @@ fn share_one(
 
     manifest.insert(&entry);
 
-    // Backfill every worktree, this one included.
+    // Make the link in each worktree. This worktree is one of them.
     let shared = repo.shared();
     let mut replaced = Vec::new();
     for wt in repo.worktrees()? {
         match seed_entry(&shared, &wt.path, &entry, force)? {
             Outcome::Linked | Outcome::Replaced | Outcome::Forced => replaced.push(wt.name()),
             Outcome::SkippedDivergent => eprintln!(
-                "  skipped    {}  (real file, differs from store -- --force to overwrite)",
+                "  skipped    {}  (a different file is present. use --force to replace it)",
                 wt.name()
             ),
             Outcome::MissingInStore | Outcome::AlreadyLinked => {}
@@ -93,14 +93,14 @@ fn share_one(
     Ok(())
 }
 
-/// Normalise a user-supplied path to a worktree-relative entry.
+/// Change a path from the user into a path that is relative to the worktree.
 fn relative_entry(toplevel: &Path, cwd: &Path, raw: &str) -> Result<String> {
     let joined = if Path::new(raw).is_absolute() {
         PathBuf::from(raw)
     } else {
         cwd.join(raw)
     };
-    // Resolve `.` / `..` without requiring the path to exist.
+    // Remove `.` and `..` from the path. The path does not need to exist.
     let mut normal = PathBuf::new();
     for part in joined.components() {
         match part {
@@ -115,7 +115,7 @@ fn relative_entry(toplevel: &Path, cwd: &Path, raw: &str) -> Result<String> {
         .strip_prefix(toplevel)
         .with_context(|| format!("{raw} is outside the worktree at {}", toplevel.display()))?;
     if rel.as_os_str().is_empty() {
-        bail!("refusing to share the worktree root");
+        bail!("wt cannot share the top directory of the worktree");
     }
     Ok(rel.to_string_lossy().into_owned())
 }

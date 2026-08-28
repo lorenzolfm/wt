@@ -2,10 +2,11 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// `worktree-shared.toml`, living in the repo's common dir.
+/// The manifest. It is at `worktree-shared.toml` in the common directory.
 ///
-/// The format is a table of named lists so that a future `copy = [...]`
-/// mode can be added without breaking existing manifests. v1 is link-only.
+/// The format is a table of named lists. A later version can add a
+/// `copy = [...]` mode and keep each manifest that is already present.
+/// Version 1 makes links only.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Manifest {
     #[serde(default)]

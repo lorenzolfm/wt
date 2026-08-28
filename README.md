@@ -1,91 +1,187 @@
 # wt
 
-Git worktrees, plus the gitignored files they need to share.
+`wt` is a tool for git worktrees. It also controls the files that git ignores.
 
-`git worktree add` gives you a checkout. It does not give you `.env.override`,
-credentials, or anything else git ignores — so every new worktree starts
-subtly broken, and the usual fix is a `setup-worktree.sh` that copies files
-from whichever worktree you decided was canonical.
+## The problem
 
-`wt` replaces the copies with one file and N symlinks, and seeds them from a
-`post-checkout` hook so it happens no matter who creates the worktree.
+The command `git worktree add` makes a new checkout. It does not make the
+files that git ignores. Examples of these files are `.env.override`,
+credentials and `terraform.tfvars`. Each new worktree is therefore not
+complete.
 
-## How it works
+The usual solution is a shell script. The script copies the files from one
+worktree into the new worktree. The result is many copies of each file. If you
+change one copy, the other copies are then not correct.
 
-**Seeding is hook-driven, never command-driven.** `wt init` symlinks
-`hooks/post-checkout` at the `wt` binary. Git runs it with cwd set to the new
-worktree; `wt` sees it was invoked as `post-checkout`, checks that the previous
-HEAD is the null sha (a worktree add or clone, not a routine `git switch`), and
-links everything in the manifest.
+`wt` keeps one file and makes a link in each worktree. A git hook makes the
+links.
 
-That covers every creation path — `wt add`, plain `git worktree add`, your
-editor, an agent's worktree — rather than just the tool's own front door.
+## Definitions
 
-**Links, not copies.** Each shared path is one real file in `shared/` plus a
-symlink per worktree. Rotating a credential is a single write. It is also the
-safe option: `git clean -xdf` and `rm -rf worktree/` both remove the *link* and
-leave the target intact.
+| Term | Definition |
+|---|---|
+| worktree | A checkout that git makes with `git worktree add`. |
+| the store | The directory `shared/`. It holds one copy of each shared file. |
+| the manifest | The file `worktree-shared.toml`. It lists the shared paths. |
+| the hook | The git hook `post-checkout`. It makes the links. |
+| a link | A symbolic link from a worktree to a file in the store. |
+| the common directory | The directory that git shares between all worktrees. |
 
-**The store mirrors the worktree; the manifest states granularity.**
+## How the tool operates
+
+### The hook makes the links
+
+The command `wt init` puts a link at `hooks/post-checkout`. The link points to
+the `wt` program.
+
+Git runs the hook after git makes a worktree. Git sets the current directory to
+the new worktree. The program reads its own name. If the name is
+`post-checkout`, the program starts the seed operation.
+
+The program then reads the first argument. Git gives the previous HEAD as the
+first argument. A null SHA shows that git made a new worktree. For all other
+values the program stops immediately.
+
+This method controls every worktree. The program that makes the worktree is not
+important. `wt add` makes worktrees. `git worktree add` makes worktrees. Your
+editor can make worktrees. An agent can make worktrees. The hook operates for
+all of them.
+
+### The tool makes links, not copies
+
+Each shared path has one file in the store. Each worktree has a link to that
+file. To change a credential, write the file one time.
+
+Links are also safer than copies. The command `git clean -xdf` removes the
+link, but it keeps the file in the store. The command `rm -rf` on a worktree
+also removes only the link.
+
+### The store and the manifest
+
+The store has the same structure as a worktree. A file at `.auth/cred.json` in
+a worktree is at `shared/.auth/cred.json` in the store.
+
+The manifest gives the list of shared paths:
 
 ```toml
-# <common-dir>/worktree-shared.toml
+# <common-directory>/worktree-shared.toml
 link = [".env.override", ".auth", ".envrc"]
 ```
 
-The explicit list exists because a directory walk cannot distinguish `.auth/`
-(wholly ignored → link the directory) from `terraform/terraform.tfvars` (an
-ignored leaf inside a tracked tree → link the file, or you shadow the
-checkout). `wt share` refuses any path with tracked files under it.
+The tool does not search the store to find the paths. A search cannot show the
+correct depth for each link. These two examples show the problem:
+
+- `.auth/` — git ignores all of this directory. Link the directory. Each new
+  file in the directory is then available in each worktree.
+- `terraform/terraform.tfvars` — git ignores only this file. The directory
+  `terraform/` contains tracked files. Link only the file. If you link the
+  directory, you hide the tracked files.
+
+The command `wt share` refuses a path that contains tracked files.
 
 ## Commands
 
-| | |
+| Command | Function |
 |---|---|
-| `wt init` | Scaffold `shared/`, the manifest, and the hook. Idempotent, moves nothing. |
-| `wt share <path>…` | Move gitignored paths into the store, link them back everywhere. |
-| `wt add <branch> [dir]` | Create a worktree. Resolves local → `origin/<branch>` → fetch → new branch. |
-| `wt sync` | Reconcile every worktree against the manifest. |
-| `wt delete <worktree>` | `git worktree remove` plus `git branch -d`. |
-| `wt clone <url> [dir]` | Clone into the `.bare` layout and create the first worktree. |
-| `wt shell-init fish` | Shell integration — `cd` into new worktrees, plus completions. |
+| `wt init` | Make the store, the manifest and the hook. Move no files. |
+| `wt share <path>…` | Move ignored paths into the store. Link them in each worktree. |
+| `wt add <branch> [dir]` | Make a worktree for a branch. |
+| `wt sync` | Compare each worktree with the manifest. Make the links that are absent. |
+| `wt delete <worktree>` | Remove a worktree. Delete its branch if git merged the branch. |
+| `wt clone <url> [dir]` | Clone into the `.bare` layout. Make the first worktree. |
+| `wt shell-init fish` | Print the shell integration. |
 
-`--repo <path>` acts on another repository. Both layouts work: the bare repo at
-the root (`repo.git/<worktree>`) or `.bare` with worktrees as siblings.
+Use the option `--repo <path>` to select a different repository.
 
-### Divergence is never destroyed
+The tool accepts two layouts. In the first layout the bare repository is the
+parent directory (`repo.git/<worktree>`). In the second layout the bare
+repository is `.bare`, and the worktrees are beside it.
 
-`share` and `sync` compare bytes before replacing a real file with a link.
-Identical → replaced. Different → skipped and reported, never overwritten.
-`--force` overrides.
+## The tool does not destroy a different file
 
-### Lazy fetch
+The commands `wt share` and `wt sync` compare the bytes of the two files
+before they make a link.
 
-`wt add` hits the network only when it has to: a known local branch or an
-existing `origin/<branch>` resolves offline; only an unknown branch triggers a
-targeted `git fetch origin <branch>`. This closes the hole where a stale
-remote-tracking ref causes a *new* local branch to be silently created
-alongside an existing remote one of the same name.
+| Condition | Result |
+|---|---|
+| The two files are the same. | The tool replaces the file with a link. |
+| The two files are different. | The tool keeps the file and prints a message. |
 
-`--no-fetch` stays offline; `--fetch` refreshes first.
+To replace a different file, use the option `--force`.
 
-## Install
+## The command `wt add` uses the network only when necessary
+
+The command finds the branch in this sequence:
+
+1. A local branch.
+2. A remote branch `origin/<branch>`.
+3. A fetch of `origin/<branch>` from the network.
+4. A new branch from the default branch.
+
+Steps 1 and 2 do not use the network. The command does step 3 only if steps 1
+and 2 find no branch.
+
+Step 3 prevents an error. A remote branch can be present, but your last
+fetch was before it. Without step 3, the command makes a new local branch
+with the same name. The two branches then diverge. You find the problem when
+you push the branch.
+
+Use the option `--no-fetch` to remove step 3. Use the option `--fetch` to do a
+fetch before step 1.
+
+The tool gives the new branch no upstream branch. This prevents a push to the
+default branch.
+
+## Installation
+
+### With cargo
 
 ```sh
 cargo build --release
-ln -sf "$PWD/target/release/wt" ~/.local/bin/wt   # stable path for hooks
-echo 'wt shell-init fish | source' >> ~/.config/fish/config.fish
+ln -sf "$PWD/target/release/wt" ~/.local/bin/wt
 ```
 
-The hook symlink must point at a **stable** path. On NixOS `current_exe()` is a
-`/nix/store/<hash>` path that changes on rebuild and is garbage-collected — and
-git skips a dangling hook *silently*, so seeding would stop working with no
-error. `wt init` refuses to write a store path into a hook and uses
-`~/.local/bin/wt` instead; `wt add` and `wt sync` warn if the hook dangles.
+### With nix
 
-## Adopting an existing repo
+```sh
+nix profile install github:lorenzolfm/wt
+```
 
-There is no migration command — adoption is just `init` plus `share`:
+For a development shell, use `nix develop`. The repository contains an `.envrc`
+file for direnv.
+
+### Shell integration
+
+A program cannot change the directory of the shell that started it. The shell
+integration does this operation. Add this line to `config.fish`:
+
+```fish
+wt shell-init fish | source
+```
+
+The integration also gives completion for branch names and worktree names.
+
+### The hook needs a path that does not change
+
+A git hook stays in the repository for longer than the program. Do not use a
+`/nix/store` path for the hook. The hash in that path changes with each build,
+and nix then removes the old path. Git ignores a hook that it cannot run and
+shows no error. The seed operation stops, and you see no message.
+
+The command `wt init` refuses to write a `/nix/store` path. It uses the first
+of these paths that is present:
+
+1. `~/.local/bin/wt`
+2. `~/.nix-profile/bin/wt`
+3. `/run/current-system/sw/bin/wt`
+
+The commands `wt add` and `wt sync` examine the hook. They print a warning if
+the hook points to a path that is not present.
+
+## How to use the tool with a repository that is already present
+
+The tool has no command to move an existing repository. Use `wt init` and then
+`wt share`:
 
 ```sh
 cd repo.git/master
@@ -93,13 +189,18 @@ wt init
 wt share .env.override .auth .envrc
 ```
 
-`share` backfills every existing worktree, so one pass converts the whole repo.
+The command `wt share` also makes the links in each worktree that is already
+present. One operation is therefore sufficient for the full repository.
 
-## Not in v1
+## Limits of version 1
 
-Copy mode (link-only for now; the manifest format reserves room for it),
-a delete-time classifier for unshared gitignored data, diagnostics beyond
-`sync`, a repo registry, and promoting a divergent worktree copy into the store.
+Version 1 does not have these functions:
+
+- Copy mode. All shared paths use links. The manifest format can accept a copy
+  mode later.
+- An examination of the ignored files during `wt delete`.
+- A list of the known repositories.
+- A command to move a different copy from a worktree into the store.
 
 ## License
 

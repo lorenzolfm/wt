@@ -14,11 +14,11 @@ use std::process::ExitCode;
 #[derive(Parser)]
 #[command(
     name = "wt",
-    about = "Git worktrees with shared gitignored files",
+    about = "Git worktrees, plus the files that git ignores",
     version
 )]
 struct Cli {
-    /// Act on this repository instead of the one containing the cwd
+    /// Use this repository. The default is the repository of the current directory
     #[arg(long, global = true, value_name = "PATH")]
     repo: Option<PathBuf>,
 
@@ -28,54 +28,54 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Scaffold the shared store, manifest and post-checkout hook
+    /// Make the store, the manifest and the hook
     Init,
 
-    /// Move gitignored paths into the store and link them everywhere
+    /// Move ignored paths into the store and make the links
     Share {
-        /// Paths, relative to the current worktree
+        /// The paths. Each path is relative to the current worktree
         #[arg(required = true)]
         paths: Vec<String>,
-        /// Replace divergent copies instead of skipping them
+        /// Replace a file that is different. The default is to keep it
         #[arg(long)]
         force: bool,
     },
 
-    /// Reconcile every worktree against the manifest
+    /// Compare each worktree with the manifest and make the links
     Sync {
-        /// Replace divergent copies instead of skipping them
+        /// Replace a file that is different. The default is to keep it
         #[arg(long)]
         force: bool,
     },
 
-    /// Create a worktree for a branch
+    /// Make a worktree for a branch
     Add {
         branch: String,
-        /// Directory name (default: branch with '/' replaced by '-')
+        /// The directory name. The default is the branch name with '-' for '/'
         dir: Option<String>,
-        /// Fetch before resolving, even if the branch is known
+        /// Fetch first, also if the branch is known
         #[arg(long, conflicts_with = "no_fetch")]
         fetch: bool,
-        /// Never touch the network
+        /// Do not use the network
         #[arg(long)]
         no_fetch: bool,
     },
 
-    /// Remove a worktree and delete its branch if merged
+    /// Remove a worktree and delete its branch
     Delete {
         worktree: String,
-        /// Remove even with modified or untracked files
+        /// Remove the worktree also if it has a modified or untracked file
         #[arg(long)]
         force: bool,
     },
 
-    /// Clone into the .bare worktree layout
+    /// Clone a repository into the .bare layout
     Clone {
         url: String,
         dir: Option<String>,
     },
 
-    /// Print shell integration (enables `cd` into new worktrees)
+    /// Print the shell integration
     ShellInit {
         #[arg(default_value = "fish")]
         shell: String,
@@ -89,8 +89,9 @@ enum Command {
 }
 
 fn main() -> ExitCode {
-    // Multi-call: git invokes the hook through a symlink named post-checkout,
-    // with cwd set to the worktree.
+    // Git runs the hook through a link with the name post-checkout. The
+    // current directory is the worktree. The program reads its own name to
+    // find this condition.
     let argv: Vec<String> = std::env::args().collect();
     let invoked_as = argv
         .first()

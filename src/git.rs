@@ -3,7 +3,7 @@ use std::os::fd::{AsFd, OwnedFd};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// Run git in `dir`, capturing stdout. Errors carry git's stderr.
+/// Run git in `dir` and return its output. An error contains the stderr of git.
 pub fn out(dir: &Path, args: &[&str]) -> Result<String> {
     let o = Command::new("git")
         .arg("-C")
@@ -21,7 +21,7 @@ pub fn out(dir: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&o.stdout).trim_end().to_string())
 }
 
-/// Run git for its exit status only.
+/// Run git and return only the result. Discard the output.
 pub fn ok(dir: &Path, args: &[&str]) -> bool {
     Command::new("git")
         .arg("-C")
@@ -34,7 +34,7 @@ pub fn ok(dir: &Path, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
-/// Run git with stdio inherited, so the user sees its progress on stderr.
+/// Run git and show its output to the user.
 pub fn passthrough(dir: &Path, args: &[&str]) -> Result<()> {
     // git's own stdout goes to stderr: this tool reserves stdout for the
     // worktree path that the shell integration reads.
@@ -55,8 +55,8 @@ pub fn passthrough(dir: &Path, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Attempt a git command, discarding all output. For speculative work such
-/// as the lazy fetch, where failure is an ordinary outcome.
+/// Run git and discard all output. Use this function when a failure is a
+/// usual result, for example the fetch operation in `wt add`.
 pub fn quiet(dir: &Path, args: &[&str]) -> bool {
     Command::new("git")
         .arg("-C")

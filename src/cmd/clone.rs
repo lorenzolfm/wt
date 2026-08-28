@@ -4,10 +4,12 @@ use anyhow::{bail, Context, Result};
 use std::fs;
 use std::path::PathBuf;
 
-/// Clone into the `.bare` layout and create the first worktree.
+/// Clone a repository into the `.bare` layout. Then make the first worktree.
 ///
-///   <name>/.bare/     the bare repo (common dir: store, manifest, hooks)
-///   <name>/.git       "gitdir: ./.bare", so git works from the container
+/// The command makes this structure:
+///
+///   <name>/.bare/     the bare repository, and the common directory
+///   <name>/.git       the text `gitdir: ./.bare`
 ///   <name>/<default>  the first worktree
 pub fn run(url: &str, dir: Option<&str>) -> Result<()> {
     let name = dir
@@ -16,7 +18,7 @@ pub fn run(url: &str, dir: Option<&str>) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let container = cwd.join(&name);
     if container.exists() {
-        bail!("{} already exists", container.display());
+        bail!("{} is already present", container.display());
     }
 
     fs::create_dir_all(&container)?;
@@ -27,8 +29,8 @@ pub fn run(url: &str, dir: Option<&str>) -> Result<()> {
     fs::write(container.join(".git"), "gitdir: ./.bare\n")
         .context("writing the .git pointer file")?;
 
-    // A bare clone has no fetch refspec, so refs/remotes/origin/* stays empty
-    // and branch resolution in `wt add` would never see remote branches.
+    // A bare clone has no fetch refspec. The refs below refs/remotes/origin
+    // therefore stay empty, and `wt add` cannot find a remote branch.
     git::out(
         &bare,
         &[

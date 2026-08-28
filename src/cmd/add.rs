@@ -6,16 +6,18 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fetch {
-    /// Fetch only when the branch is unknown locally (default).
+    /// Fetch only if the branch is not known. This is the default.
     Lazy,
-    /// Never touch the network.
+    /// Do not use the network.
     Never,
-    /// Refresh before resolving.
+    /// Fetch before the tool finds the branch.
     Always,
 }
 
-/// Create a worktree for `branch`, resolving it locally, then remotely,
-/// then -- only if still unknown -- over the network.
+/// Make a worktree for `branch`.
+///
+/// The command finds the branch in this sequence: a local branch, then a
+/// remote branch, then a fetch from the network, then a new branch.
 pub fn run(repo: &Repo, branch: &str, dir: Option<&str>, fetch: Fetch) -> Result<()> {
     if let Some(w) = hook::check(repo) {
         eprintln!("warning: {w}");
@@ -24,7 +26,7 @@ pub fn run(repo: &Repo, branch: &str, dir: Option<&str>, fetch: Fetch) -> Result
     let name = dir.map(str::to_string).unwrap_or_else(|| branch.replace('/', "-"));
     let dest: PathBuf = repo.container().join(&name);
     if dest.exists() {
-        bail!("{} already exists", dest.display());
+        bail!("{} is already present", dest.display());
     }
     let dest_str = dest.to_string_lossy().into_owned();
     let remote_ref = format!("origin/{branch}");
@@ -38,24 +40,25 @@ pub fn run(repo: &Repo, branch: &str, dir: Option<&str>, fetch: Fetch) -> Result
         eprintln!("  branch     {branch} (local)");
         vec!["worktree".into(), "add".into(), dest_str, branch.into()]
     } else if has_remote(repo, &remote_ref) {
-        eprintln!("  branch     {branch} (tracking {remote_ref})");
+        eprintln!("  branch     {branch} (tracks {remote_ref})");
         track_args(&dest_str, branch, &remote_ref)
     } else {
-        // Speculative: a branch that exists nowhere is the common case here,
-        // so a failed fetch is expected and its output is noise.
+        // A branch that is not present is the usual condition here. A failed
+        // fetch is therefore an expected result, and its output is not useful.
         let found_remotely = fetch != Fetch::Never && {
             git::quiet(&repo.common, &["fetch", "origin", branch]);
             has_remote(repo, &remote_ref)
         };
 
         if found_remotely {
-            eprintln!("  branch     {branch} (tracking {remote_ref}, newly fetched)");
+            eprintln!("  branch     {branch} (tracks {remote_ref}, from a new fetch)");
             track_args(&dest_str, branch, &remote_ref)
         } else {
             let base = repo.default_base()?;
-            eprintln!("  branch     {branch} (new, from {base})");
-            // --no-track: a new branch cut from origin/master must not
-            // inherit master as its upstream, or `git push` targets master.
+            eprintln!("  branch     {branch} (new branch from {base})");
+            // Use --no-track. A new branch from origin/master must not keep
+            // master as its upstream branch. If it does, `git push` sends the
+            // commits to master.
             vec![
                 "worktree".into(),
                 "add".into(),
@@ -71,7 +74,7 @@ pub fn run(repo: &Repo, branch: &str, dir: Option<&str>, fetch: Fetch) -> Result
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     git::passthrough(&repo.common, &argv)?;
 
-    // The post-checkout hook seeds; stdout carries the path for `cd`.
+    // The hook makes the links. The output gives the path to the shell.
     println!("{}", dest.display());
     Ok(())
 }
