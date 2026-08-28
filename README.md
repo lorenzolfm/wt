@@ -153,8 +153,17 @@ program with crane.
 For a development shell, use `nix develop`. The repository contains an `.envrc`
 file for direnv.
 
-The command `nix flake check` builds the program. It also runs clippy and it
-examines the format of the code. Clippy refuses each warning.
+The flake gives one gate for each check:
+
+| Gate | Function |
+|---|---|
+| `wt` | Build the program. |
+| `wt-clippy` | Run clippy. Clippy refuses each warning. |
+| `wt-test` | Run the tests with nextest. |
+| `wt-fmt` | Examine the format of the code. |
+
+Build one gate with `nix build .#wt-clippy`. Run all of the gates with
+`nix flake check`. GitHub Actions builds one gate for each job.
 
 ### Shell integration
 

@@ -130,3 +130,188 @@ pub fn same_content(a: &Path, b: &Path) -> Result<bool> {
     }
     Ok(true)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    struct Fixture {
+        _tmp: TempDir,
+        shared: PathBuf,
+        worktree: PathBuf,
+    }
+
+    fn fixture() -> Fixture {
+        let tmp = TempDir::new().unwrap();
+        let shared = tmp.path().join("shared");
+        let worktree = tmp.path().join("worktree");
+        fs::create_dir_all(&shared).unwrap();
+        fs::create_dir_all(&worktree).unwrap();
+        Fixture {
+            _tmp: tmp,
+            shared,
+            worktree,
+        }
+    }
+
+    fn write(root: &Path, rel: &str, body: &str) -> PathBuf {
+        let path = root.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn the_tool_makes_a_link_when_the_path_is_empty() {
+        let f = fixture();
+        write(&f.shared, ".env", "A");
+        let out = seed_entry(&f.shared, &f.worktree, ".env", false).unwrap();
+        assert_eq!(out, Outcome::Linked);
+        assert_eq!(
+            fs::read_link(f.worktree.join(".env")).unwrap(),
+            f.shared.join(".env")
+        );
+    }
+
+    #[test]
+    fn the_tool_makes_a_link_in_a_directory_below_the_worktree() {
+        let f = fixture();
+        write(&f.shared, "terraform/vars.tfvars", "A");
+        let out = seed_entry(&f.shared, &f.worktree, "terraform/vars.tfvars", false).unwrap();
+        assert_eq!(out, Outcome::Linked);
+        assert!(f.worktree.join("terraform/vars.tfvars").exists());
+    }
+
+    #[test]
+    fn the_tool_keeps_a_link_that_is_correct() {
+        let f = fixture();
+        write(&f.shared, ".env", "A");
+        seed_entry(&f.shared, &f.worktree, ".env", false).unwrap();
+        let out = seed_entry(&f.shared, &f.worktree, ".env", false).unwrap();
+        assert_eq!(out, Outcome::AlreadyLinked);
+    }
+
+    #[test]
+    fn the_tool_points_a_different_link_to_the_store() {
+        let f = fixture();
+        write(&f.shared, ".env", "A");
+        let other = write(&f.shared, "other", "B");
+        std::os::unix::fs::symlink(&other, f.worktree.join(".env")).unwrap();
+        let out = seed_entry(&f.shared, &f.worktree, ".env", false).unwrap();
+        assert_eq!(out, Outcome::Linked);
+        assert_eq!(
+            fs::read_link(f.worktree.join(".env")).unwrap(),
+            f.shared.join(".env")
+        );
+    }
+
+    #[test]
+    fn the_tool_replaces_a_file_that_has_the_same_bytes() {
+        let f = fixture();
+        write(&f.shared, ".env", "A");
+        write(&f.worktree, ".env", "A");
+        let out = seed_entry(&f.shared, &f.worktree, ".env", false).unwrap();
+        assert_eq!(out, Outcome::Replaced);
+        assert!(
+            fs::symlink_metadata(f.worktree.join(".env"))
+                .unwrap()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    fn the_tool_keeps_a_file_that_is_different() {
+        let f = fixture();
+        write(&f.shared, ".env", "A");
+        write(&f.worktree, ".env", "DIFFERENT");
+        let out = seed_entry(&f.shared, &f.worktree, ".env", false).unwrap();
+        assert_eq!(out, Outcome::SkippedDivergent);
+        // The bytes must stay. This is the most important test in the file.
+        assert_eq!(
+            fs::read_to_string(f.worktree.join(".env")).unwrap(),
+            "DIFFERENT"
+        );
+        assert!(
+            !fs::symlink_metadata(f.worktree.join(".env"))
+                .unwrap()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    fn the_option_force_replaces_a_file_that_is_different() {
+        let f = fixture();
+        write(&f.shared, ".env", "A");
+        write(&f.worktree, ".env", "DIFFERENT");
+        let out = seed_entry(&f.shared, &f.worktree, ".env", true).unwrap();
+        assert_eq!(out, Outcome::Forced);
+        assert_eq!(fs::read_to_string(f.worktree.join(".env")).unwrap(), "A");
+    }
+
+    #[test]
+    fn the_tool_reports_a_path_that_the_store_does_not_have() {
+        let f = fixture();
+        let out = seed_entry(&f.shared, &f.worktree, ".env", false).unwrap();
+        assert_eq!(out, Outcome::MissingInStore);
+        assert!(!f.worktree.join(".env").exists());
+    }
+
+    #[test]
+    fn the_tool_replaces_a_directory_that_has_the_same_content() {
+        let f = fixture();
+        write(&f.shared, ".auth/a.json", "1");
+        write(&f.shared, ".auth/b.json", "2");
+        write(&f.worktree, ".auth/a.json", "1");
+        write(&f.worktree, ".auth/b.json", "2");
+        let out = seed_entry(&f.shared, &f.worktree, ".auth", false).unwrap();
+        assert_eq!(out, Outcome::Replaced);
+    }
+
+    #[test]
+    fn the_tool_keeps_a_directory_that_has_one_different_file() {
+        let f = fixture();
+        write(&f.shared, ".auth/a.json", "1");
+        write(&f.worktree, ".auth/a.json", "CHANGED");
+        let out = seed_entry(&f.shared, &f.worktree, ".auth", false).unwrap();
+        assert_eq!(out, Outcome::SkippedDivergent);
+        assert_eq!(
+            fs::read_to_string(f.worktree.join(".auth/a.json")).unwrap(),
+            "CHANGED"
+        );
+    }
+
+    #[test]
+    fn two_directories_with_different_names_are_not_the_same() {
+        let f = fixture();
+        write(&f.shared, ".auth/a.json", "1");
+        write(&f.worktree, ".auth/b.json", "1");
+        assert!(!same_content(&f.shared.join(".auth"), &f.worktree.join(".auth")).unwrap());
+    }
+
+    #[test]
+    fn a_file_and_a_directory_are_not_the_same() {
+        let f = fixture();
+        write(&f.shared, "x/inner", "1");
+        write(&f.worktree, "x", "1");
+        assert!(!same_content(&f.shared.join("x"), &f.worktree.join("x")).unwrap());
+    }
+
+    #[test]
+    fn two_files_with_different_lengths_are_not_the_same() {
+        let f = fixture();
+        write(&f.shared, "x", "AA");
+        write(&f.worktree, "x", "A");
+        assert!(!same_content(&f.shared.join("x"), &f.worktree.join("x")).unwrap());
+    }
+
+    #[test]
+    fn the_tool_compares_the_target_of_two_links() {
+        let f = fixture();
+        let a = write(&f.shared, "target", "1");
+        std::os::unix::fs::symlink(&a, f.shared.join("x")).unwrap();
+        std::os::unix::fs::symlink(&a, f.worktree.join("x")).unwrap();
+        assert!(same_content(&f.shared.join("x"), &f.worktree.join("x")).unwrap());
+    }
+}

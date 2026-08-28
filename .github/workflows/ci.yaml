@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: ${{ matrix.gate }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      # One job for each derivation, so the runners work in parallel. A single
+      # `nix flake check` puts every gate behind one log and one runner.
+      matrix:
+        gate: [wt, wt-clippy, wt-test, wt-fmt]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+
+      # flake.lock pins each tool, and rust-toolchain.toml pins the compiler.
+      # An unchanged tree is therefore a substitution from cache.nixos.org and
+      # not a new build. No installer step chooses a different version.
+      - run: nix build --print-build-logs ".#${{ matrix.gate }}"
