@@ -58,14 +58,33 @@ fn share_one(
         bail!("git does not ignore this path. wt controls only the ignored paths");
     }
 
+    // The store can already hold the path: the config file was lost, or a
+    // different machine wrote it. Record the path again and make the links.
+    // Do not move anything, because the content is already in the store.
+    if stored.exists() {
+        let link_is_correct = fs::symlink_metadata(&source)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+            && fs::read_link(&source).ok().as_deref() == Some(stored.as_path());
+
+        if link_is_correct || !source.exists() {
+            manifest.insert(&entry);
+            eprintln!("  recorded   {entry}  (the store already has it)");
+            backfill(repo, &entry, force)?;
+            return Ok(());
+        }
+        bail!(
+            "the store already contains shared/{entry}, and {} is a different file\n  \
+             remove one of the two, then share the path again",
+            display_rel(toplevel, &source)
+        );
+    }
+
     if !source.exists() {
         bail!("this path is not in {}", toplevel.display());
     }
     if fs::symlink_metadata(&source)?.file_type().is_symlink() {
-        bail!("this path is already a link");
-    }
-    if stored.exists() {
-        bail!("the store already contains shared/{entry}");
+        bail!("this path is a link, and it does not point into the store");
     }
 
     if let Some(parent) = stored.parent() {
@@ -80,13 +99,17 @@ fn share_one(
     );
 
     manifest.insert(&entry);
+    backfill(repo, &entry, force)?;
+    Ok(())
+}
 
-    // Make the link in each worktree. This worktree is one of them.
+/// Make the link in each worktree. This worktree is one of them.
+fn backfill(repo: &Repo, entry: &str, force: bool) -> Result<()> {
     let shared = repo.shared();
-    let mut replaced = Vec::new();
+    let mut linked = Vec::new();
     for wt in repo.worktrees()? {
-        match seed_entry(&shared, &wt.path, &entry, force)? {
-            Outcome::Linked | Outcome::Replaced | Outcome::Forced => replaced.push(wt.name()),
+        match seed_entry(&shared, &wt.path, entry, force)? {
+            Outcome::Linked | Outcome::Replaced | Outcome::Forced => linked.push(wt.name()),
             Outcome::SkippedDivergent => eprintln!(
                 "  skipped    {}  (a different file is present. use --force to replace it)",
                 wt.name()
@@ -94,8 +117,8 @@ fn share_one(
             Outcome::MissingInStore | Outcome::AlreadyLinked => {}
         }
     }
-    if !replaced.is_empty() {
-        eprintln!("  linked     {}", replaced.join(", "));
+    if !linked.is_empty() {
+        eprintln!("  linked     {}", linked.join(", "));
     }
     Ok(())
 }
