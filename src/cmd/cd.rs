@@ -8,6 +8,27 @@ use anyhow::{Result, bail};
 /// therefore accepts either name, and it also accepts the start of a
 /// directory name when only one worktree matches.
 pub fn run(repo: &Repo, target: &str) -> Result<()> {
+    lookup(repo, target, "worktree")
+}
+
+/// Handle `wt <worktree>`, the short form of `wt cd <worktree>`.
+///
+/// Clap sends every unknown first word here, so a mistyped command arrives
+/// with the worktree names. A command therefore always wins over a worktree
+/// with the same name, and `wt cd <name>` reaches such a worktree.
+pub fn bare(repo: &Repo, words: &[String]) -> Result<()> {
+    match words {
+        [target] => lookup(repo, target, "command or worktree"),
+        [first, ..] => bail!(
+            "there is no command with the name {first}\n  wt <worktree> is the short form of wt cd <worktree>, and it takes one name"
+        ),
+        [] => unreachable!("clap gives at least one word"),
+    }
+}
+
+/// Find the worktree that `target` names and print its path. `noun` names
+/// what the caller looked for, for the message when nothing matches.
+fn lookup(repo: &Repo, target: &str, noun: &str) -> Result<()> {
     let worktrees = repo.worktrees()?;
 
     if let Some(w) = worktrees.iter().find(|w| w.name() == target) {
@@ -35,7 +56,7 @@ pub fn run(repo: &Repo, target: &str) -> Result<()> {
             Ok(())
         }
         [] => bail!(
-            "there is no worktree with the name {target}\n  the names are: {}",
+            "there is no {noun} with the name {target}\n  the worktree names are: {}",
             names(&worktrees)
         ),
         many => bail!(

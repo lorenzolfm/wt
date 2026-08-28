@@ -20,12 +20,16 @@ const FISH: &str = r#"# wt shell integration -- add to config.fish with:
 #   wt shell-init fish | source
 
 function wt --wraps wt --description 'git worktree manager'
+    # add, clone, cd and the short form `wt <worktree>` print a path and
+    # nothing else, so this function reads the path and changes directory.
+    # Every other command writes for the user and runs untouched. A new
+    # command that writes for the user belongs in the first case.
     switch "$argv[1]"
-        case add clone cd
+        case '' init share ls sync delete shell-init help '-*' '__*'
+            command wt $argv
+        case '*'
             set -l dest (command wt $argv)
             test -n "$dest" -a -d "$dest"; and cd $dest
-        case '*'
-            command wt $argv
     end
 end
 
@@ -39,6 +43,10 @@ complete -c wt -n __fish_use_subcommand -a ls         -d 'print each worktree, i
 complete -c wt -n __fish_use_subcommand -a sync       -d 'compare each worktree with the config and make the links'
 complete -c wt -n __fish_use_subcommand -a clone      -d 'clone a repository into the .bare layout'
 complete -c wt -n __fish_use_subcommand -a shell-init -d 'print the shell integration'
+
+# `wt <worktree>` is the short form of `wt cd <worktree>`, so a worktree name
+# is a candidate in the position of a command.
+complete -c wt -n __fish_use_subcommand -a '(command wt __worktrees 2>/dev/null)'
 
 complete -c wt -n '__fish_seen_subcommand_from add'    -a '(command wt __branches 2>/dev/null)'
 complete -c wt -n '__fish_seen_subcommand_from delete' -a '(command wt __worktrees 2>/dev/null)'
