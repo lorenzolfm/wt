@@ -25,7 +25,7 @@ function wt --wraps wt --description 'git worktree manager'
     # Every other command writes for the user and runs untouched. A new
     # command that writes for the user belongs in the first case.
     switch "$argv[1]"
-        case '' init share ls sync delete shell-init help '-*' '__*'
+        case '' init share ls sync delete prune shell-init help '-*' '__*'
             command wt $argv
         case '*'
             set -l dest (command wt $argv)
@@ -41,6 +41,7 @@ complete -c wt -n __fish_use_subcommand -a delete     -d 'remove a worktree and 
 complete -c wt -n __fish_use_subcommand -a cd         -d 'change to a worktree'
 complete -c wt -n __fish_use_subcommand -a ls         -d 'print each worktree, its branch and its links'
 complete -c wt -n __fish_use_subcommand -a sync       -d 'compare each worktree with the config and make the links'
+complete -c wt -n __fish_use_subcommand -a prune      -d 'remove each worktree whose work is finished'
 complete -c wt -n __fish_use_subcommand -a clone      -d 'clone a repository into the .bare layout'
 complete -c wt -n __fish_use_subcommand -a shell-init -d 'print the shell integration'
 

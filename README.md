@@ -119,6 +119,48 @@ wt delete eng-1234
 The command removes the worktree. It then deletes the branch if git merged the
 branch.
 
+### Remove each worktree whose work is finished
+
+```sh
+wt prune
+```
+
+The command asks origin which branches are still present. It then removes
+each worktree whose work is complete, and it deletes the branch:
+
+| Condition | Example |
+|---|---|
+| The base branch contains the branch, and origin still has it. | A merge commit, and the branch is not deleted yet. |
+| Origin no longer has the upstream branch. | A squash merge or a rebase merge, and the branch is deleted. |
+
+The second condition is the one that matters for a squash merge. Such a merge
+writes a new commit, so the branch is not an ancestor of the base branch, and
+the merge is complete nonetheless.
+
+`wt prune` removes no branch that is only on your machine. Each condition
+above needs proof that the branch reached origin: origin has it now, or the
+config names an upstream branch that origin no longer has. A new branch from
+`wt add` holds no commit of its own, so the base branch contains it, and the
+test for a merge alone cannot tell that branch from finished work. The proof
+of a push is the rule that keeps `wt add eng-1234` safe until you push it.
+
+The command also keeps:
+
+| Condition | Reason |
+|---|---|
+| The worktree has a modified file or an untracked file. | Use `--force`. |
+| You are in the worktree. | A removal would leave your shell in a path that is absent. |
+| The worktree is on the base branch, or on no branch. | There is no branch to test. |
+
+Use `--dry-run` to read the list and change nothing. Use `--no-fetch` to stay
+offline; the command then uses the refs it already has.
+
+The command also removes the administrative files of a worktree whose
+directory you deleted by hand.
+
+Git does not count the files that it ignores. An ignored file that is not in
+the store is therefore lost without a warning, as in `wt delete`.
+
 ### `wt` does not destroy a file that is different
 
 The commands `wt share` and `wt sync` compare the bytes before they make a
@@ -143,6 +185,7 @@ Use the option `--force` to replace a file that is different.
 | `wt ls` | Print each worktree, its branch and the condition of its links. |
 | `wt sync` | Compare each worktree with the config. Make the links that are absent. |
 | `wt delete <worktree>` | Remove a worktree. Delete its branch if git merged the branch. |
+| `wt prune` | Remove each worktree whose work is finished. Delete its branch. |
 | `wt clone <url> [dir]` | Clone into the `.bare` layout. Make the first worktree. |
 | `wt shell-init fish` | Print the shell integration. |
 
