@@ -7,6 +7,7 @@ pub mod completions;
 pub mod delete;
 pub mod init;
 pub mod ls;
+pub mod prune;
 pub mod share;
 pub mod shell_init;
 pub mod sync;

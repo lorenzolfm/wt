@@ -71,6 +71,19 @@ enum Command {
         no_fetch: bool,
     },
 
+    /// Remove each worktree whose work is finished
+    Prune {
+        /// Print the worktrees that the command would remove. Change nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Remove a worktree also if it has a modified or untracked file
+        #[arg(long)]
+        force: bool,
+        /// Do not use the network. Ask origin nothing
+        #[arg(long)]
+        no_fetch: bool,
+    },
+
     /// Remove a worktree and delete its branch
     Delete {
         worktree: String,
@@ -160,6 +173,11 @@ fn dispatch() -> Result<()> {
                     };
                     cmd::add::run(&repo, &branch, dir.as_deref(), mode)
                 }
+                Command::Prune {
+                    dry_run,
+                    force,
+                    no_fetch,
+                } => cmd::prune::run(&repo, dry_run, force, !no_fetch),
                 Command::Delete { worktree, force } => cmd::delete::run(&repo, &worktree, force),
                 Command::Branches => cmd::completions::branches(&repo),
                 Command::Worktrees => cmd::completions::worktrees(&repo),
