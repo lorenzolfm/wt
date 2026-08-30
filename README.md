@@ -87,10 +87,11 @@ of the worktree directory. Both also accept the name of the branch, because a
 branch can move after you make the worktree. The start of a directory name is
 sufficient when only one worktree matches.
 
-A command wins over a worktree with the same name. `wt ls` therefore prints
-the worktrees, also when a worktree has the name `ls`. The long form
-`wt cd ls` goes to that worktree, and `wt add` prints a warning when it makes
-a directory with the name of a command.
+A command wins over a worktree with the same name, and a short form such as
+`wt d` is a command. `wt ls` therefore prints the worktrees, also when a
+worktree has the name `ls`. The long form `wt cd ls` goes to that worktree,
+and `wt add` prints a warning when it makes a directory with the name of a
+command.
 
 ### See the worktrees
 
@@ -117,7 +118,7 @@ wt delete eng-1234
 ```
 
 The command removes the worktree. It then deletes the branch if git merged the
-branch.
+branch. `wt d eng-1234` is the short form.
 
 ### Remove each worktree whose work is finished
 
@@ -175,19 +176,24 @@ Use the option `--force` to replace a file that is different.
 
 ### Commands
 
-| Command | Function |
-|---|---|
-| `wt init` | Make the store, the config entry and the hook. Move no files. |
-| `wt share <path>…` | Move ignored paths into the store. Link them in each worktree. |
-| `wt add <branch> [dir]` | Make a worktree for a branch. |
-| `wt cd <worktree>` | Print the path of a worktree. The shell integration then changes directory. |
-| `wt <worktree>` | The short form of `wt cd <worktree>`. |
-| `wt ls` | Print each worktree, its branch and the condition of its links. |
-| `wt sync` | Compare each worktree with the config. Make the links that are absent. |
-| `wt delete <worktree>` | Remove a worktree. Delete its branch if git merged the branch. |
-| `wt prune` | Remove each worktree whose work is finished. Delete its branch. |
-| `wt clone <url> [dir]` | Clone into the `.bare` layout. Make the first worktree. |
-| `wt shell-init fish` | Print the shell integration. |
+| Command | Short | Function |
+|---|---|---|
+| `wt init` | | Make the store, the config entry and the hook. Move no files. |
+| `wt share <path>…` | `wt sh` | Move ignored paths into the store. Link them in each worktree. |
+| `wt add <branch> [dir]` | `wt a` | Make a worktree for a branch. |
+| `wt cd <worktree>` | `wt c` | Print the path of a worktree. The shell integration then changes directory. |
+| `wt <worktree>` | | The short form of `wt cd <worktree>`. |
+| `wt ls` | `wt l` | Print each worktree, its branch and the condition of its links. |
+| `wt sync` | `wt s` | Compare each worktree with the config. Make the links that are absent. |
+| `wt delete <worktree>` | `wt d` | Remove a worktree. Delete its branch if git merged the branch. |
+| `wt prune` | `wt p` | Remove each worktree whose work is finished. Delete its branch. |
+| `wt clone <url> [dir]` | | Clone into the `.bare` layout. Make the first worktree. |
+| `wt shell-init fish` | | Print the shell integration. |
+
+A short form is the command itself, so it also wins over a worktree with the
+same name: `wt d` runs `wt delete`, and `wt cd d` goes to a worktree named
+`d`. `wt init` and `wt clone` have no short form. Each is short already, and
+you run it one time for a repository.
 
 ### Config file
 
@@ -236,11 +242,11 @@ The integration also gives completion, and it changes the directory after
 
 | Position | Candidates |
 |---|---|
-| `wt <TAB>` | each command and each worktree |
-| `wt add <TAB>` | each local branch and each remote branch |
-| `wt delete <TAB>` | each worktree |
-| `wt cd <TAB>` | each worktree |
-| `wt share <TAB>` | each ignored path that the config does not have, and files |
+| `wt <TAB>` | each command, each short form and each worktree |
+| `wt add <TAB>`, `wt a <TAB>` | each local branch and each remote branch |
+| `wt delete <TAB>`, `wt d <TAB>` | each worktree |
+| `wt cd <TAB>`, `wt c <TAB>` | each worktree |
+| `wt share <TAB>`, `wt sh <TAB>` | each ignored path that the config does not have, and files |
 
 ## License
 

@@ -33,6 +33,7 @@ enum Command {
     Init,
 
     /// Move ignored paths into the store and make the links
+    #[command(visible_alias = "sh")]
     Share {
         /// The paths. Each path is relative to the current worktree
         #[arg(required = true)]
@@ -43,15 +44,18 @@ enum Command {
     },
 
     /// Print each worktree, its branch and the condition of its links
+    #[command(visible_alias = "l")]
     Ls,
 
     /// Change to a worktree, by directory name or by branch name
     ///
     /// wt <worktree> is the short form. A command wins over a worktree with
     /// the same name, so a worktree named ls needs the long form wt cd ls.
+    #[command(visible_alias = "c")]
     Cd { worktree: String },
 
     /// Compare each worktree with the config and make the links
+    #[command(visible_alias = "s")]
     Sync {
         /// Replace a file that is different. The default is to keep it
         #[arg(long)]
@@ -59,6 +63,7 @@ enum Command {
     },
 
     /// Make a worktree for a branch
+    #[command(visible_alias = "a")]
     Add {
         branch: String,
         /// The directory name. The default is the branch name with '-' for '/'
@@ -72,6 +77,7 @@ enum Command {
     },
 
     /// Remove each worktree whose work is finished
+    #[command(visible_alias = "p")]
     Prune {
         /// Print the worktrees that the command would remove. Change nothing
         #[arg(long)]
@@ -85,6 +91,7 @@ enum Command {
     },
 
     /// Remove a worktree and delete its branch
+    #[command(visible_alias = "d")]
     Delete {
         worktree: String,
         /// Remove the worktree also if it has a modified or untracked file
