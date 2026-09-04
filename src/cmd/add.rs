@@ -18,9 +18,23 @@ pub enum Fetch {
 ///
 /// The command finds the branch in this sequence: a local branch, then a
 /// remote branch, then a fetch from the network, then a new branch.
+///
+/// A branch can be in one worktree only. When a worktree has `branch`
+/// already, the command prints the path of that worktree, so the shell goes
+/// there.
 pub fn run(repo: &Repo, branch: &str, dir: Option<&str>, fetch: Fetch) -> Result<()> {
     if let Some(w) = hook::check(repo) {
         eprintln!("warning: {w}");
+    }
+
+    if let Some(w) = repo
+        .worktrees()?
+        .into_iter()
+        .find(|w| w.branch.as_deref() == Some(branch))
+    {
+        eprintln!("  {}  (branch {branch} is here already)", w.name());
+        println!("{}", w.path.display());
+        return Ok(());
     }
 
     let name = dir
