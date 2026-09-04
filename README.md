@@ -76,6 +76,9 @@ local branch while a remote branch with the same name is already present.
 Use the option `--no-fetch` to stay offline. Use the option `--fetch` to do a
 fetch first.
 
+A branch can be in one worktree only. When a worktree has the branch already,
+`wt add` takes you to that worktree instead of making a new one.
+
 ### Go to a worktree
 
 ```sh
