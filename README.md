@@ -115,10 +115,14 @@ wt sync
 
 ```sh
 wt delete eng-1234
+wt delete eng-1234 eng-5678
 ```
 
 The command removes the worktree. It then deletes the branch if git merged the
 branch. `wt d eng-1234` is the short form.
+
+The command takes more than one worktree. It reads every name first, so a name
+that is not a worktree stops the command before it removes anything.
 
 ### Remove each worktree whose work is finished
 
@@ -185,7 +189,7 @@ Use the option `--force` to replace a file that is different.
 | `wt <worktree>` | | The short form of `wt cd <worktree>`. |
 | `wt ls` | `wt l` | Print each worktree, its branch and the condition of its links. |
 | `wt sync` | `wt s` | Compare each worktree with the config. Make the links that are absent. |
-| `wt delete <worktree>` | `wt d` | Remove a worktree. Delete its branch if git merged the branch. |
+| `wt delete <worktree>…` | `wt d` | Remove each worktree. Delete its branch if git merged the branch. |
 | `wt prune` | `wt p` | Remove each worktree whose work is finished. Delete its branch. |
 | `wt clone <url> [dir]` | | Clone into the `.bare` layout. Make the first worktree. |
 | `wt shell-init fish` | | Print the shell integration. |
