@@ -90,11 +90,13 @@ enum Command {
         no_fetch: bool,
     },
 
-    /// Remove a worktree and delete its branch
+    /// Remove each worktree and delete its branch
     #[command(visible_alias = "d")]
     Delete {
-        worktree: String,
-        /// Remove the worktree also if it has a modified or untracked file
+        /// The worktrees, by directory name or by path
+        #[arg(required = true)]
+        worktrees: Vec<String>,
+        /// Remove a worktree also if it has a modified or untracked file
         #[arg(long)]
         force: bool,
     },
@@ -185,7 +187,7 @@ fn dispatch() -> Result<()> {
                     force,
                     no_fetch,
                 } => cmd::prune::run(&repo, dry_run, force, !no_fetch),
-                Command::Delete { worktree, force } => cmd::delete::run(&repo, &worktree, force),
+                Command::Delete { worktrees, force } => cmd::delete::run(&repo, &worktrees, force),
                 Command::Branches => cmd::completions::branches(&repo),
                 Command::Worktrees => cmd::completions::worktrees(&repo),
                 Command::Shareable => cmd::completions::shareable(&repo),
