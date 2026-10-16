@@ -76,6 +76,23 @@ local branch while a remote branch with the same name is already present.
 Use the option `--no-fetch` to stay offline. Use the option `--fetch` to do a
 fetch first.
 
+The command also accepts the link to a pull request on GitHub:
+
+```sh
+wt add https://github.com/you/project/pull/123
+```
+
+The result is the same as `wt add` with the name of the branch of the pull
+request. Git has no ref for that name. Origin has the ref
+`refs/pull/123/head`, which holds the commit. `wt` asks origin for that ref
+and for each branch, and it finds the branch at that commit. The link must
+point to the repository of origin.
+
+`wt` refuses a pull request that has no branch on origin, for example a pull
+request from a fork. It also refuses a pull request when more than one branch
+is at its commit. Give the branch name in that case. A link always uses the
+network, so `--no-fetch` refuses it.
+
 A branch can be in one worktree only. When a worktree has the branch already,
 `wt add` takes you to that worktree instead of making a new one.
 
@@ -183,7 +200,7 @@ Use the option `--force` to replace a file that is different.
 |---|---|---|
 | `wt init` | | Make the store, the config entry and the hook. Move no files. |
 | `wt share <path>…` | `wt sh` | Move ignored paths into the store. Link them in each worktree. |
-| `wt add <branch> [dir]` | `wt a` | Make a worktree for a branch. |
+| `wt add <branch> [dir]` | `wt a` | Make a worktree for a branch or for the link to a pull request. |
 | `wt cd <worktree>` | `wt c` | Print the path of a worktree. The shell integration then changes directory. |
 | `wt <worktree>` | | The short form of `wt cd <worktree>`. |
 | `wt ls` | `wt l` | Print each worktree, its branch and the condition of its links. |
