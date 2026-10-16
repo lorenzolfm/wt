@@ -215,7 +215,7 @@ fn facts(
         _ => false,
     };
 
-    let upstream = upstream(repo, branch);
+    let upstream = repo.upstream(branch);
 
     Ok(Facts {
         is_base: false,
@@ -232,31 +232,6 @@ fn facts(
 
 fn has_ref(repo: &Repo, r: &str) -> bool {
     git::ok(&repo.common, &["show-ref", "--verify", "--quiet", r])
-}
-
-/// The remote-tracking ref of the upstream branch, for example
-/// `refs/remotes/origin/eng-1234`.
-///
-/// The config holds the upstream branch, and it keeps it after `git fetch
-/// --prune` removes the remote-tracking ref. The command reads the config
-/// and not `@{upstream}` for that reason: `@{upstream}` fails once the ref
-/// is absent, which is exactly the condition that this command looks for.
-fn upstream(repo: &Repo, branch: &str) -> Option<String> {
-    let remote = git::out(
-        &repo.common,
-        &["config", "--get", &format!("branch.{branch}.remote")],
-    )
-    .ok()?;
-    let merge = git::out(
-        &repo.common,
-        &["config", "--get", &format!("branch.{branch}.merge")],
-    )
-    .ok()?;
-    let name = merge.strip_prefix("refs/heads/")?;
-    if remote.is_empty() || name.is_empty() {
-        return None;
-    }
-    Some(format!("refs/remotes/{remote}/{name}"))
 }
 
 fn describe(reason: Reason, base: &str, wt: &Worktree) -> String {

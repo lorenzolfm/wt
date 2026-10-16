@@ -93,6 +93,13 @@ request from a fork. It also refuses a pull request when more than one branch
 is at its commit. Give the branch name in that case. A link always uses the
 network, so `--no-fetch` refuses it.
 
+The branch of a pull request is on origin with the same name, so its upstream
+branch must be `origin/<branch>`. A local branch can track a different branch.
+For example, `git worktree add -b eng-1234 <path> origin/master` makes a
+branch that tracks master, and `git push` then refuses to push it. A link
+makes `origin/<branch>` the upstream branch of the local branch, also when a
+worktree has the branch already.
+
 A branch can be in one worktree only. When a worktree has the branch already,
 `wt add` takes you to that worktree instead of making a new one.
 

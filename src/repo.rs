@@ -134,6 +134,31 @@ impl Repo {
         Ok(found)
     }
 
+    /// The remote-tracking ref of the upstream branch of `branch`, for
+    /// example `refs/remotes/origin/eng-1234`.
+    ///
+    /// The config holds the upstream branch, and it keeps it after `git fetch
+    /// --prune` removes the remote-tracking ref. The function reads the config
+    /// and not `@{upstream}` for that reason: `@{upstream}` fails once the ref
+    /// is absent, which is exactly the condition that `wt prune` looks for.
+    pub fn upstream(&self, branch: &str) -> Option<String> {
+        let remote = git::out(
+            &self.common,
+            &["config", "--get", &format!("branch.{branch}.remote")],
+        )
+        .ok()?;
+        let merge = git::out(
+            &self.common,
+            &["config", "--get", &format!("branch.{branch}.merge")],
+        )
+        .ok()?;
+        let name = merge.strip_prefix("refs/heads/")?;
+        if remote.is_empty() || name.is_empty() {
+            return None;
+        }
+        Some(format!("refs/remotes/{remote}/{name}"))
+    }
+
     /// The base branch for a new branch. It comes from the HEAD of the remote.
     pub fn default_base(&self) -> Result<String> {
         if let Ok(r) = git::out(
