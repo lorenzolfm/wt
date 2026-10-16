@@ -1,3 +1,4 @@
+use crate::config::key_from_url;
 use crate::git;
 use crate::hook;
 use crate::repo::Repo;
@@ -16,6 +17,10 @@ pub enum Fetch {
 
 /// Make a worktree for `branch`.
 ///
+/// `branch` can also be the link to a pull request on GitHub. The command
+/// then uses the branch of the pull request, and the result is the same as
+/// for the branch name.
+///
 /// The command finds the branch in this sequence: a local branch, then a
 /// remote branch, then a fetch from the network, then a new branch.
 ///
@@ -26,6 +31,8 @@ pub fn run(repo: &Repo, branch: &str, dir: Option<&str>, fetch: Fetch) -> Result
     if let Some(w) = hook::check(repo) {
         eprintln!("warning: {w}");
     }
+
+    let branch = &branch_of(repo, branch, fetch)?;
 
     if let Some(w) = repo
         .worktrees()?
@@ -100,6 +107,78 @@ pub fn run(repo: &Repo, branch: &str, dir: Option<&str>, fetch: Fetch) -> Result
     Ok(())
 }
 
+/// The branch for `arg`. A branch name comes back unchanged. A link to a pull
+/// request gives the branch of that pull request.
+///
+/// Git has no ref for the branch name of a pull request. Origin has
+/// `refs/pull/<number>/head`, which holds the commit. The function asks
+/// origin for that ref and for each branch, and it finds the branch at that
+/// commit.
+fn branch_of(repo: &Repo, arg: &str, fetch: Fetch) -> Result<String> {
+    // Git does not permit ':' in a branch name, so a link is never a branch.
+    if !arg.contains("://") {
+        return Ok(arg.to_string());
+    }
+    let Some((key, number)) = pull_request(arg) else {
+        bail!("{arg} is not a link to a pull request");
+    };
+    let origin = repo.key()?;
+    if key != origin {
+        bail!("pull request {number} is in {key}, and origin is {origin}");
+    }
+    if fetch == Fetch::Never {
+        bail!("pull request {number} needs the network to find its branch. remove --no-fetch");
+    }
+
+    eprintln!("  pull       #{number} (asking origin for its branch)");
+    let pull_ref = format!("refs/pull/{number}/head");
+    let text = git::out(
+        &repo.common,
+        &["ls-remote", "origin", &pull_ref, "refs/heads/*"],
+    )?;
+    match heads_at(&text, &pull_ref).as_deref() {
+        None => bail!("origin has no pull request {number}"),
+        Some([]) => bail!(
+            "origin has no branch at the head of pull request {number}\n  \
+             the pull request can come from a fork, or origin deleted its branch"
+        ),
+        Some([branch]) => Ok(branch.clone()),
+        Some(many) => bail!(
+            "more than one branch is at the head of pull request {number}: {}\n  \
+             use wt add <branch>",
+            many.join(", ")
+        ),
+    }
+}
+
+/// The repository key and the number of a pull request, from its link.
+///
+///   https://github.com/owner/repo/pull/123        -> (github.com/owner/repo, 123)
+///   https://github.com/owner/repo/pull/123/files  -> (github.com/owner/repo, 123)
+fn pull_request(link: &str) -> Option<(String, u64)> {
+    let (repo, rest) = link.split_once("/pull/")?;
+    let number = rest.split(['/', '?', '#']).next()?.parse().ok()?;
+    Some((key_from_url(repo), number))
+}
+
+/// The branches at the commit of `pull_ref`. `listing` is the output of
+/// `git ls-remote`. The result is `None` when the listing does not have
+/// `pull_ref`.
+fn heads_at(listing: &str, pull_ref: &str) -> Option<Vec<String>> {
+    let refs: Vec<(&str, &str)> = listing
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .collect();
+    let (commit, _) = refs.iter().find(|(_, name)| *name == pull_ref)?;
+    Some(
+        refs.iter()
+            .filter(|(c, _)| c == commit)
+            .filter_map(|(_, name)| name.strip_prefix("refs/heads/"))
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
 fn track_args(dest: &str, branch: &str, remote_ref: &str) -> Vec<String> {
     vec![
         "worktree".into(),
@@ -134,4 +213,58 @@ fn has_remote(repo: &Repo, remote_ref: &str) -> bool {
             &format!("refs/remotes/{remote_ref}"),
         ],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_link_gives_the_repository_and_the_number() {
+        for link in [
+            "https://github.com/owner/repo/pull/123",
+            "https://github.com/owner/repo/pull/123/",
+            "https://github.com/owner/repo/pull/123/files",
+            "https://github.com/owner/repo/pull/123?w=1",
+            "https://github.com/owner/repo/pull/123#issuecomment-1",
+        ] {
+            assert_eq!(
+                pull_request(link),
+                Some(("github.com/owner/repo".to_string(), 123)),
+                "for {link}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_link_to_a_different_page_is_not_a_pull_request() {
+        for link in [
+            "https://github.com/owner/repo",
+            "https://github.com/owner/repo/pulls",
+            "https://github.com/owner/repo/issues/123",
+            "https://github.com/owner/repo/pull/abc",
+        ] {
+            assert_eq!(pull_request(link), None, "for {link}");
+        }
+    }
+
+    const LISTING: &str = "\
+aaa\trefs/heads/main
+bbb\trefs/heads/lorenzo/eng-1234
+ccc\trefs/heads/eng-5678
+bbb\trefs/pull/7/head
+";
+
+    #[test]
+    fn the_branch_is_the_one_at_the_commit_of_the_pull_request() {
+        assert_eq!(
+            heads_at(LISTING, "refs/pull/7/head"),
+            Some(vec!["lorenzo/eng-1234".to_string()])
+        );
+    }
+
+    #[test]
+    fn a_pull_request_that_origin_does_not_have_gives_no_result() {
+        assert_eq!(heads_at(LISTING, "refs/pull/8/head"), None);
+    }
 }

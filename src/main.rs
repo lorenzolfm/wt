@@ -62,9 +62,10 @@ enum Command {
         force: bool,
     },
 
-    /// Make a worktree for a branch
+    /// Make a worktree for a branch or a pull request
     #[command(visible_alias = "a")]
     Add {
+        /// The branch, or the link to a pull request on GitHub
         branch: String,
         /// The directory name. The default is the branch name with '-' for '/'
         dir: Option<String>,
