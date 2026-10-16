@@ -32,7 +32,15 @@ pub fn run(repo: &Repo, branch: &str, dir: Option<&str>, fetch: Fetch) -> Result
         eprintln!("warning: {w}");
     }
 
+    let link = is_link(branch);
     let branch = &branch_of(repo, branch, fetch)?;
+
+    // Origin has the branch of a pull request with the same name. A local
+    // branch can track a different branch, for example master when it
+    // started from origin/master. `git push` then refuses to push it.
+    if link && has_local(repo, branch) {
+        track_origin(repo, branch)?;
+    }
 
     if let Some(w) = repo
         .worktrees()?
@@ -115,8 +123,7 @@ pub fn run(repo: &Repo, branch: &str, dir: Option<&str>, fetch: Fetch) -> Result
 /// origin for that ref and for each branch, and it finds the branch at that
 /// commit.
 fn branch_of(repo: &Repo, arg: &str, fetch: Fetch) -> Result<String> {
-    // Git does not permit ':' in a branch name, so a link is never a branch.
-    if !arg.contains("://") {
+    if !is_link(arg) {
         return Ok(arg.to_string());
     }
     let Some((key, number)) = pull_request(arg) else {
@@ -149,6 +156,42 @@ fn branch_of(repo: &Repo, arg: &str, fetch: Fetch) -> Result<String> {
             many.join(", ")
         ),
     }
+}
+
+fn is_link(arg: &str) -> bool {
+    // Git does not permit ':' in a branch name, so a link is never a branch.
+    arg.contains("://")
+}
+
+/// Make `origin/<branch>` the upstream branch of the local `branch`. Change
+/// nothing if it is the upstream branch already.
+///
+/// The remote-tracking ref must be present. `git branch --set-upstream-to`
+/// refuses a ref that is absent, and `wt prune` reads an upstream branch
+/// without its ref as a branch that origin deleted. The function therefore
+/// fetches the branch when the ref is absent.
+fn track_origin(repo: &Repo, branch: &str) -> Result<()> {
+    let remote_ref = format!("origin/{branch}");
+    let was = repo.upstream(branch);
+    if was.as_deref() == Some(&format!("refs/remotes/{remote_ref}")) {
+        return Ok(());
+    }
+
+    if !has_remote(repo, &remote_ref) {
+        eprintln!("  fetching   origin {branch}");
+        git::quiet(&repo.common, &["fetch", "origin", branch]);
+    }
+    git::out(
+        &repo.common,
+        &["branch", "--set-upstream-to", &remote_ref, branch],
+    )?;
+
+    let was = was
+        .as_deref()
+        .map(|r| r.strip_prefix("refs/remotes/").unwrap_or(r))
+        .unwrap_or("none");
+    eprintln!("  upstream   {remote_ref} (was {was})");
+    Ok(())
 }
 
 /// The repository key and the number of a pull request, from its link.
@@ -218,6 +261,9 @@ fn has_remote(repo: &Repo, remote_ref: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+    use std::process::Command;
+    use tempfile::TempDir;
 
     #[test]
     fn a_link_gives_the_repository_and_the_number() {
@@ -266,5 +312,59 @@ bbb\trefs/pull/7/head
     #[test]
     fn a_pull_request_that_origin_does_not_have_gives_no_result() {
         assert_eq!(heads_at(LISTING, "refs/pull/8/head"), None);
+    }
+
+    /// Run git for a fixture. The fixture ignores the config of the user.
+    fn git(dir: &Path, args: &[&str]) {
+        let o = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "wt")
+            .env("GIT_AUTHOR_EMAIL", "wt@example.com")
+            .env("GIT_COMMITTER_NAME", "wt")
+            .env("GIT_COMMITTER_EMAIL", "wt@example.com")
+            .output()
+            .unwrap();
+        assert!(
+            o.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+
+    /// `git worktree add -b feature <path> origin/master` gives a branch that
+    /// tracks master. The repository has no remote-tracking ref for the branch
+    /// of the pull request yet.
+    #[test]
+    fn the_branch_of_a_pull_request_tracks_its_branch_on_origin() {
+        let tmp = TempDir::new().unwrap();
+        let origin = tmp.path().join("origin");
+        let bare = tmp.path().join(".bare");
+        git(
+            tmp.path(),
+            &["init", "-b", "master", origin.to_str().unwrap()],
+        );
+        git(&origin, &["commit", "--allow-empty", "-m", "one"]);
+        git(&origin, &["branch", "feature"]);
+        git(tmp.path(), &["init", "--bare", bare.to_str().unwrap()]);
+        git(
+            &bare,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        git(&bare, &["fetch", "origin", "master"]);
+        git(&bare, &["branch", "--track", "feature", "origin/master"]);
+        let repo = Repo { common: bare };
+
+        track_origin(&repo, "feature").unwrap();
+
+        assert_eq!(
+            repo.upstream("feature").as_deref(),
+            Some("refs/remotes/origin/feature")
+        );
+        assert!(has_remote(&repo, "origin/feature"));
     }
 }
