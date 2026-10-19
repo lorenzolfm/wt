@@ -40,7 +40,7 @@ complete -c wt -f
 complete -c wt -n __fish_use_subcommand -a init       -d 'make the store, the config entry and the hook'
 complete -c wt -n __fish_use_subcommand -a 'share sh' -d 'move ignored paths into the store and make the links'
 complete -c wt -n __fish_use_subcommand -a 'add a'    -d 'make a worktree for a branch'
-complete -c wt -n __fish_use_subcommand -a 'delete d' -d 'remove a worktree and delete its branch'
+complete -c wt -n __fish_use_subcommand -a 'delete d' -d 'remove each worktree and delete its branch'
 complete -c wt -n __fish_use_subcommand -a 'cd c'     -d 'change to a worktree'
 complete -c wt -n __fish_use_subcommand -a 'ls l'     -d 'print each worktree, its branch and its links'
 complete -c wt -n __fish_use_subcommand -a 'sync s'   -d 'compare each worktree with the config and make the links'
