@@ -4,6 +4,8 @@ mod git;
 mod hook;
 mod repo;
 mod seed;
+#[cfg(test)]
+mod testing;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

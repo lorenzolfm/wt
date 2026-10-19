@@ -261,8 +261,7 @@ fn has_remote(repo: &Repo, remote_ref: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
-    use std::process::Command;
+    use crate::testing::git;
     use tempfile::TempDir;
 
     #[test]
@@ -312,28 +311,6 @@ bbb\trefs/pull/7/head
     #[test]
     fn a_pull_request_that_origin_does_not_have_gives_no_result() {
         assert_eq!(heads_at(LISTING, "refs/pull/8/head"), None);
-    }
-
-    /// Run git for a fixture. The fixture ignores the config of the user.
-    fn git(dir: &Path, args: &[&str]) {
-        let o = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_AUTHOR_NAME", "wt")
-            .env("GIT_AUTHOR_EMAIL", "wt@example.com")
-            .env("GIT_COMMITTER_NAME", "wt")
-            .env("GIT_COMMITTER_EMAIL", "wt@example.com")
-            .output()
-            .unwrap();
-        assert!(
-            o.status.success(),
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&o.stderr)
-        );
     }
 
     /// `git worktree add -b feature <path> origin/master` gives a branch that
