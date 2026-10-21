@@ -88,10 +88,9 @@ request. Git has no ref for that name. Origin has the ref
 and for each branch, and it finds the branch at that commit. The link must
 point to the repository of origin.
 
-`wt` refuses a pull request that has no branch on origin, for example a pull
-request from a fork. It also refuses a pull request when more than one branch
-is at its commit. Give the branch name in that case. A link always uses the
-network, so `--no-fetch` refuses it.
+`wt` refuses a pull request when more than one branch is at its commit. Give
+the branch name in that case. It also refuses a pull request whose branch
+origin deleted. A link always uses the network, so `--no-fetch` refuses it.
 
 The branch of a pull request is on origin with the same name, so its upstream
 branch must be `origin/<branch>`. A local branch can track a different branch.
@@ -99,6 +98,21 @@ For example, `git worktree add -b eng-1234 <path> origin/master` makes a
 branch that tracks master, and `git push` then refuses to push it. A link
 makes `origin/<branch>` the upstream branch of the local branch, also when a
 worktree has the branch already.
+
+A pull request can come from a fork. Origin then has no branch at its commit,
+and git cannot name the fork. `wt` asks GitHub with
+[`gh`](https://cli.github.com), so a pull request from a fork needs `gh` and
+`gh auth login`. A pull request from origin does not need `gh`.
+
+`wt` adds a remote for the fork with the name of its owner, for example
+`alice`. The URL has the form of the URL of origin, so SSH stays SSH. If a
+remote has the URL of the fork already, `wt` uses that remote. The local
+branch has the name of the branch in the fork, and it tracks
+`alice/<branch>`. When a local branch has that name and tracks a different
+branch, for example `main`, the local branch is `alice-main`.
+
+`wt prune` fetches from origin only, so it does not learn that a pull request
+from a fork is finished. Remove its worktree with `wt delete`.
 
 A branch can be in one worktree only. When a worktree has the branch already,
 `wt add` takes you to that worktree instead of making a new one.
