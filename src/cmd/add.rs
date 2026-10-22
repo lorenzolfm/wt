@@ -2,8 +2,9 @@ use crate::config::key_from_url;
 use crate::git;
 use crate::hook;
 use crate::repo::Repo;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
+use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fetch {
@@ -19,7 +20,8 @@ pub enum Fetch {
 ///
 /// `branch` can also be the link to a pull request on GitHub. The command
 /// then uses the branch of the pull request, and the result is the same as
-/// for the branch name.
+/// for the branch name. The branch of a pull request from a fork tracks the
+/// branch in the fork.
 ///
 /// The command finds the branch in this sequence: a local branch, then a
 /// remote branch, then a fetch from the network, then a new branch.
@@ -33,13 +35,46 @@ pub fn run(repo: &Repo, branch: &str, dir: Option<&str>, fetch: Fetch) -> Result
     }
 
     let link = is_link(branch);
-    let branch = &branch_of(repo, branch, fetch)?;
+    let b = branch_of(repo, branch, fetch)?;
+    make(repo, &b, link, dir, fetch)
+}
 
-    // Origin has the branch of a pull request with the same name. A local
-    // branch can track a different branch, for example master when it
-    // started from origin/master. `git push` then refuses to push it.
+/// A local branch and the remote branch that it tracks.
+#[derive(Debug, PartialEq, Eq)]
+struct Branch {
+    /// The name of the local branch.
+    name: String,
+    /// The remote that has the branch: origin, or the remote of a fork.
+    remote: String,
+    /// The name of the branch on the remote. It is different from `name`
+    /// only when a different local branch has that name.
+    upstream: String,
+}
+
+impl Branch {
+    fn on_origin(name: &str) -> Branch {
+        Branch {
+            name: name.to_string(),
+            remote: "origin".to_string(),
+            upstream: name.to_string(),
+        }
+    }
+
+    /// The remote-tracking branch, for example `origin/eng-1234`.
+    fn remote_ref(&self) -> String {
+        format!("{}/{}", self.remote, self.upstream)
+    }
+}
+
+/// Make a worktree for `b`. For a link, the remote branch must be present:
+/// the command does not make a new branch for a pull request.
+fn make(repo: &Repo, b: &Branch, link: bool, dir: Option<&str>, fetch: Fetch) -> Result<()> {
+    let branch = &b.name;
+
+    // A local branch can track a different branch, for example master when
+    // it started from origin/master. `git push` then refuses to push it.
     if link && has_local(repo, branch) {
-        track_origin(repo, branch)?;
+        track(repo, b)?;
     }
 
     if let Some(w) = repo
@@ -60,11 +95,11 @@ pub fn run(repo: &Repo, branch: &str, dir: Option<&str>, fetch: Fetch) -> Result
         bail!("{} is already present", dest.display());
     }
     let dest_str = dest.to_string_lossy().into_owned();
-    let remote_ref = format!("origin/{branch}");
+    let remote_ref = b.remote_ref();
 
     if fetch == Fetch::Always {
-        eprintln!("  fetching   origin {branch}");
-        git::quiet(&repo.common, &["fetch", "origin", branch]);
+        eprintln!("  fetching   {} {}", b.remote, b.upstream);
+        git::quiet(&repo.common, &["fetch", &b.remote, &b.upstream]);
     }
 
     let args: Vec<String> = if has_local(repo, branch) {
@@ -77,13 +112,21 @@ pub fn run(repo: &Repo, branch: &str, dir: Option<&str>, fetch: Fetch) -> Result
         // A branch that is not present is the usual condition here. A failed
         // fetch is therefore an expected result, and its output is not useful.
         let found_remotely = fetch != Fetch::Never && {
-            git::quiet(&repo.common, &["fetch", "origin", branch]);
+            git::quiet(&repo.common, &["fetch", &b.remote, &b.upstream]);
             has_remote(repo, &remote_ref)
         };
 
         if found_remotely {
             eprintln!("  branch     {branch} (tracks {remote_ref}, from a new fetch)");
             track_args(&dest_str, branch, &remote_ref)
+        } else if link {
+            // A new branch would not have the commits of the pull request,
+            // and the worktree would look correct.
+            bail!(
+                "wt cannot fetch {remote_ref}\n  run git fetch {} {} to see why",
+                b.remote,
+                b.upstream
+            );
         } else {
             let base = repo.default_base()?;
             eprintln!("  branch     {branch} (new branch from {base})");
@@ -115,16 +158,17 @@ pub fn run(repo: &Repo, branch: &str, dir: Option<&str>, fetch: Fetch) -> Result
     Ok(())
 }
 
-/// The branch for `arg`. A branch name comes back unchanged. A link to a pull
-/// request gives the branch of that pull request.
+/// The branch for `arg`. A branch name gives that branch on origin. A link
+/// to a pull request gives the branch of that pull request.
 ///
 /// Git has no ref for the branch name of a pull request. Origin has
 /// `refs/pull/<number>/head`, which holds the commit. The function asks
 /// origin for that ref and for each branch, and it finds the branch at that
-/// commit.
-fn branch_of(repo: &Repo, arg: &str, fetch: Fetch) -> Result<String> {
+/// commit. When origin has no branch at that commit, the pull request can
+/// come from a fork, and the function asks GitHub for the fork.
+fn branch_of(repo: &Repo, arg: &str, fetch: Fetch) -> Result<Branch> {
     if !is_link(arg) {
-        return Ok(arg.to_string());
+        return Ok(Branch::on_origin(arg));
     }
     let Some((key, number)) = pull_request(arg) else {
         bail!("{arg} is not a link to a pull request");
@@ -145,11 +189,18 @@ fn branch_of(repo: &Repo, arg: &str, fetch: Fetch) -> Result<String> {
     )?;
     match heads_at(&text, &pull_ref).as_deref() {
         None => bail!("origin has no pull request {number}"),
-        Some([]) => bail!(
-            "origin has no branch at the head of pull request {number}\n  \
-             the pull request can come from a fork, or origin deleted its branch"
-        ),
-        Some([branch]) => Ok(branch.clone()),
+        Some([]) => {
+            eprintln!("  pull       #{number} (asking GitHub for its fork)");
+            let head = head_of(&key, number)?;
+            if key_from_url(&head.https_url) == origin {
+                bail!(
+                    "origin no longer has {}, the branch of pull request {number}",
+                    head.branch
+                );
+            }
+            fork_branch(repo, &head)
+        }
+        Some([branch]) => Ok(Branch::on_origin(branch)),
         Some(many) => bail!(
             "more than one branch is at the head of pull request {number}: {}\n  \
              use wt add <branch>",
@@ -163,27 +214,27 @@ fn is_link(arg: &str) -> bool {
     arg.contains("://")
 }
 
-/// Make `origin/<branch>` the upstream branch of the local `branch`. Change
-/// nothing if it is the upstream branch already.
+/// Make the branch on the remote the upstream branch of the local branch.
+/// Change nothing if it is the upstream branch already.
 ///
 /// The remote-tracking ref must be present. `git branch --set-upstream-to`
 /// refuses a ref that is absent, and `wt prune` reads an upstream branch
 /// without its ref as a branch that origin deleted. The function therefore
 /// fetches the branch when the ref is absent.
-fn track_origin(repo: &Repo, branch: &str) -> Result<()> {
-    let remote_ref = format!("origin/{branch}");
-    let was = repo.upstream(branch);
+fn track(repo: &Repo, b: &Branch) -> Result<()> {
+    let remote_ref = b.remote_ref();
+    let was = repo.upstream(&b.name);
     if was.as_deref() == Some(&format!("refs/remotes/{remote_ref}")) {
         return Ok(());
     }
 
     if !has_remote(repo, &remote_ref) {
-        eprintln!("  fetching   origin {branch}");
-        git::quiet(&repo.common, &["fetch", "origin", branch]);
+        eprintln!("  fetching   {} {}", b.remote, b.upstream);
+        git::quiet(&repo.common, &["fetch", &b.remote, &b.upstream]);
     }
     git::out(
         &repo.common,
-        &["branch", "--set-upstream-to", &remote_ref, branch],
+        &["branch", "--set-upstream-to", &remote_ref, &b.name],
     )?;
 
     let was = was
@@ -192,6 +243,130 @@ fn track_origin(repo: &Repo, branch: &str) -> Result<()> {
         .unwrap_or("none");
     eprintln!("  upstream   {remote_ref} (was {was})");
     Ok(())
+}
+
+/// The head of a pull request, as GitHub gives it.
+#[derive(Debug, PartialEq, Eq)]
+struct Head {
+    /// The owner of the repository that has the branch, for example the
+    /// owner of a fork.
+    owner: String,
+    https_url: String,
+    ssh_url: String,
+    /// The name of the branch in that repository.
+    branch: String,
+}
+
+/// The fields of a `Head`, in the order that `parse_head` reads. GitHub
+/// gives no repository when the fork is deleted, and its fields are then
+/// empty.
+const HEAD_FIELDS: &str =
+    "[.head.repo.owner.login, .head.repo.clone_url, .head.repo.ssh_url, .head.ref] | @tsv";
+
+/// Ask GitHub for the head of a pull request. Git cannot give it:
+/// `refs/pull/<number>/head` holds the commit, and not the fork. `gh` has
+/// the login of the user, so a private fork is also possible.
+fn head_of(key: &str, number: u64) -> Result<Head> {
+    let Some((host, path)) = key.split_once('/') else {
+        bail!("{key} has no host");
+    };
+    let o = Command::new("gh")
+        .args(["api", "--hostname", host])
+        .arg(format!("repos/{path}/pulls/{number}"))
+        .args(["--jq", HEAD_FIELDS])
+        .output()
+        .context("wt cannot run gh. wt asks gh for the fork of a pull request")?;
+    if !o.status.success() {
+        bail!(
+            "gh cannot get pull request {number}: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        );
+    }
+    parse_head(&String::from_utf8_lossy(&o.stdout)).with_context(|| {
+        format!("GitHub has no fork for pull request {number}. the fork can be deleted")
+    })
+}
+
+/// The head in the output of `HEAD_FIELDS`. The result is `None` when a
+/// field is empty.
+fn parse_head(text: &str) -> Option<Head> {
+    let fields: Vec<&str> = text.trim_end_matches('\n').split('\t').collect();
+    let &[owner, https_url, ssh_url, branch] = fields.as_slice() else {
+        return None;
+    };
+    if fields.iter().any(|f| f.is_empty()) {
+        return None;
+    }
+    Some(Head {
+        owner: owner.to_string(),
+        https_url: https_url.to_string(),
+        ssh_url: ssh_url.to_string(),
+        branch: branch.to_string(),
+    })
+}
+
+/// The local branch for the head of a pull request from a fork.
+///
+/// The function uses the remote that has the URL of the fork. If no remote
+/// has it, the function adds a remote with the name of the owner.
+///
+/// The local branch has the name of the branch in the fork. When a local
+/// branch has that name and tracks a different branch, for example `main`,
+/// the name is `<owner>-<branch>`. The same head therefore always gives the
+/// same local branch.
+fn fork_branch(repo: &Repo, head: &Head) -> Result<Branch> {
+    let remote = fork_remote(repo, head)?;
+    let want = format!("refs/remotes/{remote}/{}", head.branch);
+    let names = [
+        head.branch.clone(),
+        format!("{}-{}", head.owner, head.branch),
+    ];
+    let Some(name) = names
+        .iter()
+        .find(|n| !has_local(repo, n) || repo.upstream(n).as_deref() == Some(want.as_str()))
+    else {
+        bail!(
+            "the local branches {} and {} are present, and they track other branches",
+            names[0],
+            names[1]
+        );
+    };
+    Ok(Branch {
+        name: name.clone(),
+        remote,
+        upstream: head.branch.clone(),
+    })
+}
+
+/// The remote for the fork of `head`. Add it if no remote has the URL of
+/// the fork.
+fn fork_remote(repo: &Repo, head: &Head) -> Result<String> {
+    let key = key_from_url(&head.https_url);
+    let listing = git::out(&repo.common, &["remote", "-v"])?;
+    // Each line is `<name>\t<url> (fetch)` or `<name>\t<url> (push)`.
+    if let Some((name, _)) = listing
+        .lines()
+        .filter_map(|line| line.strip_suffix(" (fetch)")?.split_once('\t'))
+        .find(|(_, url)| key_from_url(url) == key)
+    {
+        return Ok(name.to_string());
+    }
+
+    let origin = git::out(&repo.common, &["remote", "get-url", "origin"])?;
+    let url = fork_url(&origin, head);
+    git::out(&repo.common, &["remote", "add", &head.owner, url])?;
+    eprintln!("  remote     {} ({url})", head.owner);
+    Ok(head.owner.clone())
+}
+
+/// The URL of the fork in the form of the URL of origin. SSH stays SSH, so
+/// a push to the fork uses the key that a push to origin uses.
+fn fork_url<'a>(origin: &str, head: &'a Head) -> &'a str {
+    if origin.starts_with("https://") || origin.starts_with("http://") {
+        &head.https_url
+    } else {
+        &head.ssh_url
+    }
 }
 
 /// The repository key and the number of a pull request, from its link.
@@ -262,6 +437,7 @@ fn has_remote(repo: &Repo, remote_ref: &str) -> bool {
 mod tests {
     use super::*;
     use crate::testing::git;
+    use std::path::Path;
     use tempfile::TempDir;
 
     #[test]
@@ -313,11 +489,8 @@ bbb\trefs/pull/7/head
         assert_eq!(heads_at(LISTING, "refs/pull/8/head"), None);
     }
 
-    /// `git worktree add -b feature <path> origin/master` gives a branch that
-    /// tracks master. The repository has no remote-tracking ref for the branch
-    /// of the pull request yet.
-    #[test]
-    fn the_branch_of_a_pull_request_tracks_its_branch_on_origin() {
+    /// A bare repository whose origin has one commit on master.
+    fn repo() -> (TempDir, Repo) {
         let tmp = TempDir::new().unwrap();
         let origin = tmp.path().join("origin");
         let bare = tmp.path().join(".bare");
@@ -326,22 +499,168 @@ bbb\trefs/pull/7/head
             &["init", "-b", "master", origin.to_str().unwrap()],
         );
         git(&origin, &["commit", "--allow-empty", "-m", "one"]);
-        git(&origin, &["branch", "feature"]);
         git(tmp.path(), &["init", "--bare", bare.to_str().unwrap()]);
         git(
             &bare,
             &["remote", "add", "origin", origin.to_str().unwrap()],
         );
         git(&bare, &["fetch", "origin", "master"]);
-        git(&bare, &["branch", "--track", "feature", "origin/master"]);
-        let repo = Repo { common: bare };
+        (tmp, Repo { common: bare })
+    }
 
-        track_origin(&repo, "feature").unwrap();
+    /// A fork of origin that alice owns. Its `branch` has a commit that
+    /// origin does not have.
+    fn fork(tmp: &TempDir, branch: &str) -> Head {
+        let fork = tmp.path().join("fork");
+        git(
+            tmp.path(),
+            &[
+                "clone",
+                tmp.path().join("origin").to_str().unwrap(),
+                fork.to_str().unwrap(),
+            ],
+        );
+        git(&fork, &["switch", "-C", branch]);
+        git(&fork, &["commit", "--allow-empty", "-m", "two"]);
+        let url = fork.to_string_lossy().into_owned();
+        Head {
+            owner: "alice".into(),
+            https_url: url.clone(),
+            ssh_url: url,
+            branch: branch.into(),
+        }
+    }
+
+    fn commit(dir: &Path) -> String {
+        crate::git::out(dir, &["rev-parse", "HEAD"]).unwrap()
+    }
+
+    /// `git worktree add -b feature <path> origin/master` gives a branch that
+    /// tracks master. The repository has no remote-tracking ref for the branch
+    /// of the pull request yet.
+    #[test]
+    fn the_branch_of_a_pull_request_tracks_its_branch_on_origin() {
+        let (tmp, repo) = repo();
+        git(&tmp.path().join("origin"), &["branch", "feature"]);
+        git(
+            &repo.common,
+            &["branch", "--track", "feature", "origin/master"],
+        );
+
+        track(&repo, &Branch::on_origin("feature")).unwrap();
 
         assert_eq!(
             repo.upstream("feature").as_deref(),
             Some("refs/remotes/origin/feature")
         );
         assert!(has_remote(&repo, "origin/feature"));
+    }
+
+    #[test]
+    fn a_pull_request_from_a_fork_gives_a_worktree_that_tracks_the_fork() {
+        let (tmp, repo) = repo();
+        let head = fork(&tmp, "fix/keysets");
+
+        let b = fork_branch(&repo, &head).unwrap();
+        make(&repo, &b, true, None, Fetch::Lazy).unwrap();
+
+        assert_eq!(
+            repo.upstream("fix/keysets").as_deref(),
+            Some("refs/remotes/alice/fix/keysets")
+        );
+        assert_eq!(
+            commit(&tmp.path().join("fix-keysets")),
+            commit(&tmp.path().join("fork"))
+        );
+    }
+
+    /// A pull request from the master of a fork must not take the local
+    /// master, which tracks origin/master.
+    #[test]
+    fn a_fork_branch_with_the_name_of_a_local_branch_gets_the_owner_in_front() {
+        let (tmp, repo) = repo();
+        git(
+            &repo.common,
+            &["branch", "--track", "master", "origin/master"],
+        );
+        let head = fork(&tmp, "master");
+
+        let b = fork_branch(&repo, &head).unwrap();
+        make(&repo, &b, true, None, Fetch::Lazy).unwrap();
+
+        assert_eq!(
+            repo.upstream("alice-master").as_deref(),
+            Some("refs/remotes/alice/master")
+        );
+        assert_eq!(
+            repo.upstream("master").as_deref(),
+            Some("refs/remotes/origin/master")
+        );
+        // The next link to the same pull request finds the same branch, and
+        // it adds no second remote.
+        assert_eq!(fork_branch(&repo, &head).unwrap(), b);
+    }
+
+    /// A new branch would hold none of the commits of the pull request.
+    #[test]
+    fn a_link_whose_branch_wt_cannot_fetch_makes_no_branch() {
+        let (tmp, repo) = repo();
+        let head = Head {
+            branch: "absent".into(),
+            ..fork(&tmp, "feature")
+        };
+
+        let b = fork_branch(&repo, &head).unwrap();
+
+        assert!(make(&repo, &b, true, None, Fetch::Lazy).is_err());
+        assert!(!has_local(&repo, "absent"));
+        assert!(!tmp.path().join("absent").exists());
+    }
+
+    #[test]
+    fn the_url_of_the_fork_has_the_form_of_the_url_of_origin() {
+        let head = Head {
+            owner: "alice".into(),
+            https_url: "https://github.com/alice/repo.git".into(),
+            ssh_url: "git@github.com:alice/repo.git".into(),
+            branch: "feature".into(),
+        };
+        for (origin, url) in [
+            (
+                "https://github.com/owner/repo.git",
+                "https://github.com/alice/repo.git",
+            ),
+            (
+                "git@github.com:owner/repo.git",
+                "git@github.com:alice/repo.git",
+            ),
+            (
+                "ssh://git@github.com/owner/repo.git",
+                "git@github.com:alice/repo.git",
+            ),
+        ] {
+            assert_eq!(fork_url(origin, &head), url, "for {origin}");
+        }
+    }
+
+    #[test]
+    fn the_output_of_gh_gives_the_head() {
+        assert_eq!(
+            parse_head(
+                "alice\thttps://github.com/alice/repo.git\tgit@github.com:alice/repo.git\tfix/x\n"
+            ),
+            Some(Head {
+                owner: "alice".into(),
+                https_url: "https://github.com/alice/repo.git".into(),
+                ssh_url: "git@github.com:alice/repo.git".into(),
+                branch: "fix/x".into(),
+            })
+        );
+    }
+
+    /// GitHub gives no repository for a pull request whose fork is deleted.
+    #[test]
+    fn a_deleted_fork_gives_no_head() {
+        assert_eq!(parse_head("\t\t\tfix/x\n"), None);
     }
 }
