@@ -166,6 +166,8 @@ fn make(repo: &Repo, b: &Branch, link: bool, dir: Option<&str>, fetch: Fetch) ->
 /// origin for that ref and for each branch, and it finds the branch at that
 /// commit. When origin has no branch at that commit, the pull request can
 /// come from a fork, and the function asks GitHub for the fork.
+///
+/// The link can also point to the repository that origin is a fork of.
 fn branch_of(repo: &Repo, arg: &str, fetch: Fetch) -> Result<Branch> {
     if !is_link(arg) {
         return Ok(Branch::on_origin(arg));
@@ -173,12 +175,12 @@ fn branch_of(repo: &Repo, arg: &str, fetch: Fetch) -> Result<Branch> {
     let Some((key, number)) = pull_request(arg) else {
         bail!("{arg} is not a link to a pull request");
     };
-    let origin = repo.key()?;
-    if key != origin {
-        bail!("pull request {number} is in {key}, and origin is {origin}");
-    }
     if fetch == Fetch::Never {
         bail!("pull request {number} needs the network to find its branch. remove --no-fetch");
+    }
+    let origin = repo.key()?;
+    if key != origin {
+        return parent_branch(repo, &key, &origin, number);
     }
 
     eprintln!("  pull       #{number} (asking origin for its branch)");
@@ -207,6 +209,24 @@ fn branch_of(repo: &Repo, arg: &str, fetch: Fetch) -> Result<Branch> {
             many.join(", ")
         ),
     }
+}
+
+/// The branch of a pull request in `key`, the repository that origin is a
+/// fork of. Origin has no `refs/pull/<number>/head` for it, so the function
+/// asks GitHub for the head. The head can be in origin, in `key` or in a
+/// different fork.
+///
+/// The function refuses a repository that origin is not a fork of. Its
+/// branch has a different history, and a fetch can be large.
+fn parent_branch(repo: &Repo, key: &str, origin: &str, number: u64) -> Result<Branch> {
+    eprintln!("  pull       #{number} (asking GitHub for its fork)");
+    if !forked_from(origin)?
+        .iter()
+        .any(|p| p.eq_ignore_ascii_case(key))
+    {
+        bail!("pull request {number} is in {key}, and origin {origin} is not a fork of it");
+    }
+    fork_branch(repo, &head_of(key, number)?)
 }
 
 fn is_link(arg: &str) -> bool {
@@ -267,24 +287,43 @@ const HEAD_FIELDS: &str =
 /// `refs/pull/<number>/head` holds the commit, and not the fork. `gh` has
 /// the login of the user, so a private fork is also possible.
 fn head_of(key: &str, number: u64) -> Result<Head> {
+    let text = gh(key, &format!("/pulls/{number}"), HEAD_FIELDS)
+        .with_context(|| format!("gh cannot get pull request {number}"))?;
+    parse_head(&text).with_context(|| {
+        format!("GitHub has no fork for pull request {number}. the fork can be deleted")
+    })
+}
+
+/// The repositories that `key` is a fork of: its parent and the source of
+/// its network. The result is empty when `key` is not a fork.
+fn forked_from(key: &str) -> Result<Vec<String>> {
+    let text = gh(key, "", ".parent.full_name, .source.full_name")
+        .with_context(|| format!("gh cannot get {key}"))?;
+    let host = key.split('/').next().unwrap_or_default();
+    // gh prints an empty line for a field that GitHub does not give.
+    Ok(text
+        .lines()
+        .filter(|name| !name.is_empty())
+        .map(|name| format!("{host}/{name}"))
+        .collect())
+}
+
+/// Ask GitHub for `endpoint` of the repository `key`, and give the output of
+/// the filter `jq`.
+fn gh(key: &str, endpoint: &str, jq: &str) -> Result<String> {
     let Some((host, path)) = key.split_once('/') else {
         bail!("{key} has no host");
     };
     let o = Command::new("gh")
         .args(["api", "--hostname", host])
-        .arg(format!("repos/{path}/pulls/{number}"))
-        .args(["--jq", HEAD_FIELDS])
+        .arg(format!("repos/{path}{endpoint}"))
+        .args(["--jq", jq])
         .output()
         .context("wt cannot run gh. wt asks gh for the fork of a pull request")?;
     if !o.status.success() {
-        bail!(
-            "gh cannot get pull request {number}: {}",
-            String::from_utf8_lossy(&o.stderr).trim()
-        );
+        bail!("{}", String::from_utf8_lossy(&o.stderr).trim());
     }
-    parse_head(&String::from_utf8_lossy(&o.stdout)).with_context(|| {
-        format!("GitHub has no fork for pull request {number}. the fork can be deleted")
-    })
+    Ok(String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
 /// The head in the output of `HEAD_FIELDS`. The result is `None` when a
@@ -305,7 +344,9 @@ fn parse_head(text: &str) -> Option<Head> {
     })
 }
 
-/// The local branch for the head of a pull request from a fork.
+/// The local branch for the head of a pull request from a fork. The head
+/// can also be in origin or in its parent, when the pull request is in the
+/// parent.
 ///
 /// The function uses the remote that has the URL of the fork. If no remote
 /// has it, the function adds a remote with the name of the owner.
