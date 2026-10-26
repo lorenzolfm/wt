@@ -85,8 +85,7 @@ wt add https://github.com/you/project/pull/123
 The result is the same as `wt add` with the name of the branch of the pull
 request. Git has no ref for that name. Origin has the ref
 `refs/pull/123/head`, which holds the commit. `wt` asks origin for that ref
-and for each branch, and it finds the branch at that commit. The link must
-point to the repository of origin.
+and for each branch, and it finds the branch at that commit.
 
 `wt` refuses a pull request when more than one branch is at its commit. Give
 the branch name in that case. It also refuses a pull request whose branch
@@ -110,6 +109,14 @@ remote has the URL of the fork already, `wt` uses that remote. The local
 branch has the name of the branch in the fork, and it tracks
 `alice/<branch>`. When a local branch has that name and tracks a different
 branch, for example `main`, the local branch is `alice-main`.
+
+The link can also point to the repository that origin is a fork of. For
+example, origin is `you/project`, and the pull request is in
+`upstream/project`. Origin has no ref for that pull request, so `wt` asks
+GitHub for its branch, and the link needs `gh`. The branch can be in origin, in
+`upstream/project` or in a different fork. `wt` uses the remote that has the
+URL of that repository, or it adds one as for a fork. `wt` refuses a link to a
+repository that origin is not a fork of.
 
 `wt prune` fetches from origin only, so it does not learn that a pull request
 from a fork is finished. Remove its worktree with `wt delete`.
