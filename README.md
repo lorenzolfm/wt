@@ -173,6 +173,11 @@ The command finds each name before it removes anything, so a name that is wrong
 changes nothing. If git refuses a worktree, the command keeps it, removes the
 others and then fails.
 
+You can be in a worktree that the command removes. The shell integration then
+takes you to the worktree of the default branch, for example `main`. If no
+worktree has the default branch, it takes you to the directory that holds the
+worktrees.
+
 ### Remove each worktree whose work is finished
 
 ```sh
@@ -291,7 +296,8 @@ wt shell-init fish | source
 ```
 
 The integration also gives completion, and it changes the directory after
-`wt add`, `wt clone`, `wt cd` and `wt <worktree>`:
+`wt add`, `wt clone`, `wt cd` and `wt <worktree>`. It also changes the
+directory after `wt delete` removes the worktree that you are in:
 
 | Position | Candidates |
 |---|---|

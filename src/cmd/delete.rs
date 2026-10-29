@@ -1,6 +1,7 @@
 use crate::git;
 use crate::repo::{Repo, Worktree};
 use anyhow::{Result, bail};
+use std::path::PathBuf;
 
 /// Remove each worktree with `git worktree remove`. Then delete its branch.
 ///
@@ -12,15 +13,31 @@ use anyhow::{Result, bail};
 /// also refuses if an untracked file is present. Git does not count the
 /// files that it ignores. An ignored file that is not in the store is
 /// therefore lost, and the user sees no warning.
+///
+/// The shell can stand in a worktree that the command removes. The command
+/// then prints the path of a directory that is present, and the shell
+/// integration goes there.
 pub fn run(repo: &Repo, targets: &[String], force: bool) -> Result<()> {
     let worktrees = repo.worktrees()?;
     let found = resolve(&worktrees, targets)?;
+    let here = std::env::current_dir().ok();
 
     let mut kept = Vec::new();
+    let mut lost = false;
     for wt in found {
+        // Ask before the removal. An absent directory has no real path to
+        // compare.
+        let inside = here.as_deref().is_some_and(|h| wt.contains(h));
         if remove(repo, wt, force).is_err() {
             kept.push(wt.name());
+        } else if inside {
+            lost = true;
         }
+    }
+    if lost {
+        let dest = landing(repo);
+        eprintln!("  cd         {}", dest.display());
+        println!("{}", dest.display());
     }
     if !kept.is_empty() {
         let names = kept.join(", ");
@@ -72,6 +89,26 @@ fn resolve<'a>(worktrees: &'a [Worktree], targets: &[String]) -> Result<Vec<&'a 
         );
     }
     Ok(found)
+}
+
+/// The directory for a shell whose worktree the command removed: the
+/// worktree of the base branch, for example `main`.
+///
+/// The repository can have no such worktree, for example after `wt delete
+/// main`. The shell then goes to the directory that holds the worktrees.
+fn landing(repo: &Repo) -> PathBuf {
+    let base = repo.default_base().ok();
+    // `default_base` gives a remote branch, for example `origin/main`. The
+    // worktree of the base branch is on the local branch `main`.
+    let local = base
+        .as_deref()
+        .map(|b| b.strip_prefix("origin/").unwrap_or(b));
+    repo.worktrees()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|w| local.is_some() && w.branch.as_deref() == local && w.path.exists())
+        .map(|w| w.path)
+        .unwrap_or_else(|| repo.container())
 }
 
 fn remove(repo: &Repo, wt: &Worktree, force: bool) -> Result<()> {
@@ -168,6 +205,46 @@ mod tests {
         run(&repo, &targets(&["a", &path]), false).unwrap();
 
         assert!(!tmp.path().join("a").exists());
+    }
+
+    /// Give the repository the base branch `main`, as `wt clone` does.
+    fn set_base(repo: &Repo) {
+        git(
+            &repo.common,
+            &["update-ref", "refs/remotes/origin/main", "main"],
+        );
+        git(
+            &repo.common,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
+    }
+
+    #[test]
+    fn the_shell_goes_to_the_worktree_of_the_base_branch() {
+        let (tmp, repo) = repo_with(&["a"]);
+        set_base(&repo);
+        let main = tmp.path().join("main");
+        git(
+            &repo.common,
+            &["worktree", "add", main.to_str().unwrap(), "main"],
+        );
+
+        assert_eq!(
+            std::fs::canonicalize(landing(&repo)).unwrap(),
+            std::fs::canonicalize(&main).unwrap()
+        );
+    }
+
+    #[test]
+    fn the_shell_goes_to_the_container_when_no_worktree_has_the_base_branch() {
+        let (tmp, repo) = repo_with(&["a"]);
+        set_base(&repo);
+
+        assert_eq!(landing(&repo), tmp.path());
     }
 
     #[test]

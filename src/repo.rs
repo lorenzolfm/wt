@@ -16,6 +16,19 @@ impl Worktree {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| self.path.display().to_string())
     }
+
+    /// True when `dir` is the worktree or a directory below it.
+    ///
+    /// `git worktree list` gives a real path, and the current directory of
+    /// the shell can hold a link, so the function compares the real paths.
+    pub fn contains(&self, dir: &Path) -> bool {
+        real(dir).starts_with(real(&self.path))
+    }
+}
+
+/// The path with each link resolved, or the path itself when it is absent.
+fn real(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
 /// A repository that has worktrees. The common directory identifies it.
