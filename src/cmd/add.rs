@@ -389,10 +389,19 @@ fn fork_remote(repo: &Repo, head: &Head) -> Result<String> {
     let key = key_from_url(&head.https_url);
     let listing = git::out(&repo.common, &["remote", "-v"])?;
     // Each line is `<name>\t<url> (fetch)` or `<name>\t<url> (push)`.
-    if let Some((name, _)) = listing
+    let remotes: Vec<(&str, String)> = listing
         .lines()
         .filter_map(|line| line.strip_suffix(" (fetch)")?.split_once('\t'))
-        .find(|(_, url)| same_repo(&key_from_url(url), &key))
+        .map(|(name, url)| (name, key_from_url(url)))
+        .collect();
+    // The URL in the case of GitHub comes first. Git lists the remotes in the
+    // order of their names, and an older wt added a remote with that URL
+    // beside a remote in a different case. Its branches track that remote,
+    // so a different remote gives a second branch for the same head.
+    if let Some((name, _)) = remotes
+        .iter()
+        .find(|(_, k)| *k == key)
+        .or_else(|| remotes.iter().find(|(_, k)| same_repo(k, &key)))
     {
         return Ok(name.to_string());
     }
@@ -682,6 +691,30 @@ bbb\trefs/pull/7/head
         };
 
         assert_eq!(fork_remote(&repo, &head).unwrap(), "upstream");
+    }
+
+    /// An older wt added the remote `zoe` with the case of GitHub, beside the
+    /// remote `mine` in a different case, and its branches track `zoe`. Git
+    /// lists `mine` first.
+    #[test]
+    fn a_remote_with_the_case_of_github_comes_before_a_different_case() {
+        let (_tmp, repo) = repo();
+        git(
+            &repo.common,
+            &["remote", "add", "mine", "git@github.com:zoe/repo.git"],
+        );
+        git(
+            &repo.common,
+            &["remote", "add", "zoe", "git@github.com:zoe/Repo.git"],
+        );
+        let head = Head {
+            owner: "zoe".into(),
+            https_url: "https://github.com/zoe/Repo.git".into(),
+            ssh_url: "git@github.com:zoe/Repo.git".into(),
+            branch: "feature".into(),
+        };
+
+        assert_eq!(fork_remote(&repo, &head).unwrap(), "zoe");
     }
 
     /// A new branch would hold none of the commits of the pull request.
