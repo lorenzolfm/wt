@@ -281,6 +281,17 @@ struct Head {
     branch: String,
 }
 
+impl Head {
+    /// The local branches that can hold the head, in the order that
+    /// `fork_branch` tries them.
+    fn local_names(&self) -> [String; 2] {
+        [
+            self.branch.clone(),
+            format!("{}-{}", self.owner, self.branch),
+        ]
+    }
+}
+
 /// The fields of a `Head`, in the order that `parse_head` reads. GitHub
 /// gives no repository when the fork is deleted, and its fields are then
 /// empty.
@@ -362,10 +373,7 @@ fn parse_head(text: &str) -> Option<Head> {
 fn fork_branch(repo: &Repo, head: &Head) -> Result<Branch> {
     let remote = fork_remote(repo, head)?;
     let want = format!("refs/remotes/{remote}/{}", head.branch);
-    let names = [
-        head.branch.clone(),
-        format!("{}-{}", head.owner, head.branch),
-    ];
+    let names = head.local_names();
     let Some(name) = names
         .iter()
         .find(|n| !has_local(repo, n) || repo.upstream(n).as_deref() == Some(want.as_str()))
@@ -389,20 +397,22 @@ fn fork_remote(repo: &Repo, head: &Head) -> Result<String> {
     let key = key_from_url(&head.https_url);
     let listing = git::out(&repo.common, &["remote", "-v"])?;
     // Each line is `<name>\t<url> (fetch)` or `<name>\t<url> (push)`.
-    let remotes: Vec<(&str, String)> = listing
+    let remotes: Vec<&str> = listing
         .lines()
         .filter_map(|line| line.strip_suffix(" (fetch)")?.split_once('\t'))
-        .map(|(name, url)| (name, key_from_url(url)))
+        .filter(|(_, url)| same_repo(&key_from_url(url), &key))
+        .map(|(name, _)| name)
         .collect();
-    // The URL in the case of GitHub comes first. Git lists the remotes in the
-    // order of their names, and an older wt added a remote with that URL
-    // beside a remote in a different case. Its branches track that remote,
-    // so a different remote gives a second branch for the same head.
-    if let Some((name, _)) = remotes
-        .iter()
-        .find(|(_, k)| *k == key)
-        .or_else(|| remotes.iter().find(|(_, k)| same_repo(k, &key)))
-    {
+    // More than one remote can have the fork: a person or an older wt can
+    // add a second one. A local branch can track the head on one of them,
+    // and a different remote gives a second branch for the same head.
+    let tracked = remotes.iter().find(|r| {
+        let want = format!("refs/remotes/{r}/{}", head.branch);
+        head.local_names()
+            .iter()
+            .any(|n| repo.upstream(n).as_deref() == Some(want.as_str()))
+    });
+    if let Some(name) = tracked.or(remotes.first()) {
         return Ok(name.to_string());
     }
 
@@ -693,28 +703,18 @@ bbb\trefs/pull/7/head
         assert_eq!(fork_remote(&repo, &head).unwrap(), "upstream");
     }
 
-    /// An older wt added the remote `zoe` with the case of GitHub, beside the
-    /// remote `mine` in a different case, and its branches track `zoe`. Git
-    /// lists `mine` first.
+    /// wt added the remote `alice`, and the branch of the head tracks it. A
+    /// person or an older wt then added `aaa` for the same fork. Git lists
+    /// `aaa` first.
     #[test]
-    fn a_remote_with_the_case_of_github_comes_before_a_different_case() {
-        let (_tmp, repo) = repo();
-        git(
-            &repo.common,
-            &["remote", "add", "mine", "git@github.com:zoe/repo.git"],
-        );
-        git(
-            &repo.common,
-            &["remote", "add", "zoe", "git@github.com:zoe/Repo.git"],
-        );
-        let head = Head {
-            owner: "zoe".into(),
-            https_url: "https://github.com/zoe/Repo.git".into(),
-            ssh_url: "git@github.com:zoe/Repo.git".into(),
-            branch: "feature".into(),
-        };
+    fn a_second_remote_for_a_fork_gives_the_same_branch() {
+        let (tmp, repo) = repo();
+        let head = fork(&tmp, "feature");
+        let b = fork_branch(&repo, &head).unwrap();
+        make(&repo, &b, true, None, Fetch::Lazy).unwrap();
+        git(&repo.common, &["remote", "add", "aaa", &head.https_url]);
 
-        assert_eq!(fork_remote(&repo, &head).unwrap(), "zoe");
+        assert_eq!(fork_branch(&repo, &head).unwrap(), b);
     }
 
     /// A new branch would hold none of the commits of the pull request.

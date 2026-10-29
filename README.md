@@ -105,7 +105,9 @@ and git cannot name the fork. `wt` asks GitHub with
 
 `wt` adds a remote for the fork with the name of its owner, for example
 `alice`. The URL has the form of the URL of origin, so SSH stays SSH. If a
-remote has the URL of the fork already, `wt` uses that remote. The local
+remote has the URL of the fork already, `wt` uses that remote. When more than
+one remote has it, `wt` uses the remote that the branch of the pull request
+tracks, so the same pull request always gives the same branch. The local
 branch has the name of the branch in the fork, and it tracks
 `alice/<branch>`. When a local branch has that name and tracks a different
 branch, for example `main`, the local branch is `alice-main`.
