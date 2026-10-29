@@ -78,11 +78,11 @@ impl Repo {
         Ok(config::key_from_url(&url))
     }
 
-    pub fn is_managed(&self) -> bool {
-        match (self.key(), Config::load()) {
-            (Ok(key), Ok(cfg)) => cfg.repo(&key).is_some(),
-            _ => false,
-        }
+    /// Whether the global config has an entry for this repository. An error
+    /// means that wt cannot tell: origin is absent, or wt cannot read the
+    /// config.
+    pub fn is_managed(&self) -> Result<bool> {
+        Ok(Config::load()?.repo(&self.key()?).is_some())
     }
 
     /// The shared paths for this repository, from the global config.
@@ -195,7 +195,7 @@ impl Repo {
     }
 
     pub fn require_managed(&self) -> Result<()> {
-        if !self.is_managed() {
+        if !self.is_managed()? {
             bail!(
                 "wt does not control {}\n  run `wt init` first",
                 self.common.display()

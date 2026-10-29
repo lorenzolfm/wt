@@ -114,7 +114,7 @@ pub fn run_as_hook(args: &[String]) -> i32 {
 fn seed_here() -> Result<()> {
     let cwd = std::env::current_dir()?;
     let repo = Repo::discover(Some(&cwd))?;
-    if !repo.is_managed() {
+    if !repo.is_managed()? {
         return Ok(());
     }
     let manifest = repo.manifest()?;
