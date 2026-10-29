@@ -125,7 +125,7 @@ pub fn run(repo: &Repo, dry_run: bool, force: bool, fetch: bool) -> Result<()> {
         }
     }
 
-    let cwd = std::env::current_dir().ok().and_then(real);
+    let cwd = std::env::current_dir().ok();
     let worktrees = repo.worktrees()?;
     let mut removed = 0usize;
     let mut blocked = 0usize;
@@ -209,12 +209,6 @@ fn facts(
         });
     }
 
-    let current = match (cwd, real(wt.path.clone())) {
-        // The user can stand in a directory below the worktree.
-        (Some(cwd), Some(path)) => cwd.starts_with(&path),
-        _ => false,
-    };
-
     let upstream = repo.upstream(branch);
 
     Ok(Facts {
@@ -226,7 +220,7 @@ fn facts(
         // Git does not list the files that it ignores, which is the same
         // rule that `git worktree remove` uses.
         dirty: !git::out(&wt.path, &["status", "--porcelain"])?.is_empty(),
-        current,
+        current: cwd.is_some_and(|c| wt.contains(c)),
     })
 }
 
@@ -309,12 +303,6 @@ fn stale(repo: &Repo) -> Result<()> {
         eprintln!("  pruned     {}  (its directory is absent)", w.name());
     }
     Ok(())
-}
-
-/// The path with each link resolved. `git worktree list` gives a real path,
-/// and the current directory of the shell can hold a link.
-fn real(p: std::path::PathBuf) -> Option<std::path::PathBuf> {
-    std::fs::canonicalize(&p).ok().or(Some(p))
 }
 
 #[cfg(test)]

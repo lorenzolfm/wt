@@ -3,9 +3,9 @@ use anyhow::{Result, bail};
 /// Print the shell integration.
 ///
 /// A program cannot change the directory of the shell that started it. The
-/// commands `add` and `clone` therefore print the new path. The function
-/// below reads that path and changes the directory. The program makes this
-/// shell code. Do not write it manually.
+/// commands `add`, `clone`, `cd` and `delete` therefore print the new path.
+/// The function below reads that path and changes the directory. The program
+/// makes this shell code. Do not write it manually.
 pub fn run(shell: &str) -> Result<()> {
     match shell {
         "fish" => {
@@ -22,15 +22,25 @@ const FISH: &str = r#"# wt shell integration -- add to config.fish with:
 function wt --wraps wt --description 'git worktree manager'
     # add, clone, cd and the short form `wt <worktree>` print a path and
     # nothing else, so this function reads the path and changes directory.
-    # Every other command writes for the user and runs untouched. A new
-    # command that writes for the user belongs in the first case, with its
-    # short form beside it.
+    # delete prints a path only when it removes the worktree that the shell
+    # is in. Every other command writes for the user and runs untouched. A
+    # new command that writes for the user belongs in the first case, with
+    # its short form beside it.
     switch "$argv[1]"
-        case '' init share sh ls l sync s delete d prune p shell-init help '-*' '__*'
+        case '' init share sh ls l sync s prune p shell-init help '-*' '__*'
             command wt $argv
         case '*'
             set -l dest (command wt $argv)
-            test -n "$dest" -a -d "$dest"; and cd $dest
+            # The status of wt, and not of the test: delete can print no
+            # path and succeed, or print a path and fail.
+            set -l st $status
+            if test -n "$dest" -a -d "$dest"
+                cd $dest; or return
+            else if test -n "$dest"
+                # Text that is not a path, for example the output of --help.
+                printf '%s\n' $dest
+            end
+            return $st
     end
 end
 
