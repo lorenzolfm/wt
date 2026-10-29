@@ -1,17 +1,10 @@
-mod cmd;
-mod config;
-mod git;
-mod hook;
-mod repo;
-mod seed;
-#[cfg(test)]
-mod testing;
-
 use anyhow::Result;
-use clap::{Parser, Subcommand};
-use repo::Repo;
+use clap::{CommandFactory, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use wt::cmd;
+use wt::hook;
+use wt::repo::Repo;
 
 #[derive(Parser)]
 #[command(
@@ -182,7 +175,11 @@ fn dispatch() -> Result<()> {
                     } else {
                         cmd::add::Fetch::Lazy
                     };
-                    cmd::add::run(&repo, &branch, dir.as_deref(), mode)
+                    let path = cmd::add::run(&repo, &branch, dir.as_deref(), mode)?;
+                    warn_if_command(&path);
+                    // The output gives the path to the shell.
+                    println!("{}", path.display());
+                    Ok(())
                 }
                 Command::Prune {
                     dry_run,
@@ -197,5 +194,27 @@ fn dispatch() -> Result<()> {
                 Command::ShellInit { .. } | Command::Clone { .. } => unreachable!(),
             }
         }
+    }
+}
+
+/// True when `name` is a command of wt.
+///
+/// A command always wins over a worktree with the same name, because clap
+/// reads the first word as a command before it reads it as a worktree.
+fn is_command(name: &str) -> bool {
+    name == "help"
+        || Cli::command()
+            .get_subcommands()
+            .any(|c| c.get_name() == name || c.get_all_aliases().any(|a| a == name))
+}
+
+/// Warn when `wt <name>` cannot reach the worktree at `path`.
+fn warn_if_command(path: &Path) {
+    let Some(name) = path.file_name().map(|n| n.to_string_lossy()) else {
+        return;
+    };
+    if is_command(&name) {
+        eprintln!("warning: wt {name} runs the command {name}, not this worktree");
+        eprintln!("  use wt cd {name} to go to it");
     }
 }

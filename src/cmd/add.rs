@@ -26,10 +26,12 @@ pub enum Fetch {
 /// The command finds the branch in this sequence: a local branch, then a
 /// remote branch, then a fetch from the network, then a new branch.
 ///
-/// A branch can be in one worktree only. When a worktree has `branch`
-/// already, the command prints the path of that worktree, so the shell goes
-/// there.
-pub fn run(repo: &Repo, branch: &str, dir: Option<&str>, fetch: Fetch) -> Result<()> {
+/// The result is the path of the worktree. A branch can be in one worktree
+/// only. When a worktree has `branch` already, the result is the path of that
+/// worktree, so the shell goes there.
+///
+/// The progress goes to stderr. The function prints nothing on stdout.
+pub fn run(repo: &Repo, branch: &str, dir: Option<&str>, fetch: Fetch) -> Result<PathBuf> {
     if let Some(w) = hook::check(repo) {
         eprintln!("warning: {w}");
     }
@@ -66,9 +68,10 @@ impl Branch {
     }
 }
 
-/// Make a worktree for `b`. For a link, the remote branch must be present:
-/// the command does not make a new branch for a pull request.
-fn make(repo: &Repo, b: &Branch, link: bool, dir: Option<&str>, fetch: Fetch) -> Result<()> {
+/// Make a worktree for `b` and return its path. For a link, the remote
+/// branch must be present: the command does not make a new branch for a pull
+/// request.
+fn make(repo: &Repo, b: &Branch, link: bool, dir: Option<&str>, fetch: Fetch) -> Result<PathBuf> {
     let branch = &b.name;
 
     // A local branch can track a different branch, for example master when
@@ -83,8 +86,7 @@ fn make(repo: &Repo, b: &Branch, link: bool, dir: Option<&str>, fetch: Fetch) ->
         .find(|w| w.branch.as_deref() == Some(branch))
     {
         eprintln!("  {}  (branch {branch} is here already)", w.name());
-        println!("{}", w.path.display());
-        return Ok(());
+        return Ok(w.path);
     }
 
     let name = dir
@@ -146,16 +148,9 @@ fn make(repo: &Repo, b: &Branch, link: bool, dir: Option<&str>, fetch: Fetch) ->
     };
 
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    // The hook makes the links.
     git::passthrough(&repo.common, &argv)?;
-
-    if crate::cmd::is_command(&name) {
-        eprintln!("warning: wt {name} runs the command {name}, not this worktree");
-        eprintln!("  use wt cd {name} to go to it");
-    }
-
-    // The hook makes the links. The output gives the path to the shell.
-    println!("{}", dest.display());
-    Ok(())
+    Ok(dest)
 }
 
 /// The branch for `arg`. A branch name gives that branch on origin. A link
@@ -594,6 +589,22 @@ bbb\trefs/pull/7/head
 
     fn commit(dir: &Path) -> String {
         crate::git::out(dir, &["rev-parse", "HEAD"]).unwrap()
+    }
+
+    /// A program that uses the library takes the path from the result. The
+    /// second call gives the worktree that has the branch, and not the
+    /// directory that it names.
+    #[test]
+    fn the_result_is_the_path_of_the_worktree_that_has_the_branch() {
+        let (tmp, repo) = repo();
+
+        let made = run(&repo, "feature", None, Fetch::Never).unwrap();
+        let found = run(&repo, "feature", Some("other"), Fetch::Never).unwrap();
+
+        let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        assert_eq!(real(&made), real(&tmp.path().join("feature")));
+        assert_eq!(real(&found), real(&made));
+        assert!(!tmp.path().join("other").exists());
     }
 
     /// `git worktree add -b feature <path> origin/master` gives a branch that
