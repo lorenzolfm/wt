@@ -179,7 +179,7 @@ fn branch_of(repo: &Repo, arg: &str, fetch: Fetch) -> Result<Branch> {
         bail!("pull request {number} needs the network to find its branch. remove --no-fetch");
     }
     let origin = repo.key()?;
-    if key != origin {
+    if !same_repo(&key, &origin) {
         return parent_branch(repo, &key, &origin, number);
     }
 
@@ -194,7 +194,7 @@ fn branch_of(repo: &Repo, arg: &str, fetch: Fetch) -> Result<Branch> {
         Some([]) => {
             eprintln!("  pull       #{number} (asking GitHub for its fork)");
             let head = head_of(&key, number)?;
-            if key_from_url(&head.https_url) == origin {
+            if same_repo(&key_from_url(&head.https_url), &origin) {
                 bail!(
                     "origin no longer has {}, the branch of pull request {number}",
                     head.branch
@@ -220,13 +220,17 @@ fn branch_of(repo: &Repo, arg: &str, fetch: Fetch) -> Result<Branch> {
 /// branch has a different history, and a fetch can be large.
 fn parent_branch(repo: &Repo, key: &str, origin: &str, number: u64) -> Result<Branch> {
     eprintln!("  pull       #{number} (asking GitHub for its fork)");
-    if !forked_from(origin)?
-        .iter()
-        .any(|p| p.eq_ignore_ascii_case(key))
-    {
+    if !forked_from(origin)?.iter().any(|p| same_repo(p, key)) {
         bail!("pull request {number} is in {key}, and origin {origin} is not a fork of it");
     }
     fork_branch(repo, &head_of(key, number)?)
+}
+
+/// Whether the keys `a` and `b` are for the same repository. GitHub ignores
+/// the case of the owner and of the name, and it gives them in the case of
+/// the page. A link or a remote can therefore have a different case.
+fn same_repo(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
 }
 
 fn is_link(arg: &str) -> bool {
@@ -388,7 +392,7 @@ fn fork_remote(repo: &Repo, head: &Head) -> Result<String> {
     if let Some((name, _)) = listing
         .lines()
         .filter_map(|line| line.strip_suffix(" (fetch)")?.split_once('\t'))
-        .find(|(_, url)| key_from_url(url) == key)
+        .find(|(_, url)| same_repo(&key_from_url(url), &key))
     {
         return Ok(name.to_string());
     }
@@ -640,6 +644,44 @@ bbb\trefs/pull/7/head
         // The next link to the same pull request finds the same branch, and
         // it adds no second remote.
         assert_eq!(fork_branch(&repo, &head).unwrap(), b);
+    }
+
+    /// GitHub ignores the case of a repository name, and a link has the case
+    /// of the page. The link `.../Origin/pull/7` is to a pull request in
+    /// origin, which is `.../origin`.
+    #[test]
+    fn a_link_to_origin_in_a_different_case_gives_the_branch_on_origin() {
+        let (tmp, repo) = repo();
+        let origin = tmp.path().join("origin");
+        git(&origin, &["switch", "-c", "feature"]);
+        git(&origin, &["commit", "--allow-empty", "-m", "two"]);
+        git(&origin, &["update-ref", "refs/pull/7/head", "feature"]);
+        let link = format!("https://{}/pull/7", tmp.path().join("Origin").display());
+
+        assert_eq!(
+            branch_of(&repo, &link, Fetch::Lazy).unwrap(),
+            Branch::on_origin("feature")
+        );
+    }
+
+    /// A remote can have the name of a fork in a case that GitHub does not
+    /// give, for example `getfloresta/floresta` for `getfloresta/Floresta`.
+    /// The fork is the same, so a second remote for it is not necessary.
+    #[test]
+    fn a_fork_that_a_remote_has_in_a_different_case_uses_that_remote() {
+        let (_tmp, repo) = repo();
+        git(
+            &repo.common,
+            &["remote", "add", "upstream", "git@github.com:alice/repo.git"],
+        );
+        let head = Head {
+            owner: "alice".into(),
+            https_url: "https://github.com/alice/Repo.git".into(),
+            ssh_url: "git@github.com:alice/Repo.git".into(),
+            branch: "feature".into(),
+        };
+
+        assert_eq!(fork_remote(&repo, &head).unwrap(), "upstream");
     }
 
     /// A new branch would hold none of the commits of the pull request.
