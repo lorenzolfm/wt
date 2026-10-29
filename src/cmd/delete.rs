@@ -20,21 +20,20 @@ use std::path::PathBuf;
 pub fn run(repo: &Repo, targets: &[String], force: bool) -> Result<()> {
     let worktrees = repo.worktrees()?;
     let found = resolve(&worktrees, targets)?;
+    // Read the directory before the removals. Once git removes it, the
+    // system gives no path for it.
     let here = std::env::current_dir().ok();
 
     let mut kept = Vec::new();
-    let mut lost = false;
     for wt in found {
-        // Ask before the removal. An absent directory has no real path to
-        // compare.
-        let inside = here.as_deref().is_some_and(|h| wt.contains(h));
         if remove(repo, wt, force).is_err() {
             kept.push(wt.name());
-        } else if inside {
-            lost = true;
         }
     }
-    if lost {
+    // Test the directory, and not the result of git. Git can fail after it
+    // removed a part of the worktree, for example at a directory without
+    // write permission.
+    if here.is_some_and(|h| matches!(h.try_exists(), Ok(false))) {
         let dest = landing(repo);
         eprintln!("  cd         {}", dest.display());
         println!("{}", dest.display());
