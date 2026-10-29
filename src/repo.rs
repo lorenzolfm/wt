@@ -1,4 +1,4 @@
-use crate::config::{self, Config, RepoConfig};
+use crate::config::{Config, RepoConfig, RepoKey};
 use crate::git;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -65,7 +65,7 @@ impl Repo {
 
     /// The key for this repository in the global config: its remote URL in
     /// a normal form.
-    pub fn key(&self) -> Result<String> {
+    pub fn key(&self) -> Result<RepoKey> {
         let url = git::out(&self.common, &["remote", "get-url", "origin"]).with_context(|| {
             format!(
                 "{} has no remote named origin\n  wt uses the remote URL as the key in {}",
@@ -75,7 +75,7 @@ impl Repo {
                     .unwrap_or_else(|_| "the config file".into())
             )
         })?;
-        Ok(config::key_from_url(&url))
+        Ok(RepoKey::from_url(&url))
     }
 
     /// Whether the global config has an entry for this repository. An error

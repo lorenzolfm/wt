@@ -1,4 +1,4 @@
-use crate::config::key_from_url;
+use crate::config::RepoKey;
 use crate::git;
 use crate::hook;
 use crate::repo::Repo;
@@ -179,7 +179,7 @@ fn branch_of(repo: &Repo, arg: &str, fetch: Fetch) -> Result<Branch> {
         bail!("pull request {number} needs the network to find its branch. remove --no-fetch");
     }
     let origin = repo.key()?;
-    if !same_repo(&key, &origin) {
+    if key != origin {
         return parent_branch(repo, &key, &origin, number);
     }
 
@@ -194,7 +194,7 @@ fn branch_of(repo: &Repo, arg: &str, fetch: Fetch) -> Result<Branch> {
         Some([]) => {
             eprintln!("  pull       #{number} (asking GitHub for its fork)");
             let head = head_of(&key, number)?;
-            if same_repo(&key_from_url(&head.https_url), &origin) {
+            if head.key() == origin {
                 bail!(
                     "origin no longer has {}, the branch of pull request {number}",
                     head.branch
@@ -218,19 +218,12 @@ fn branch_of(repo: &Repo, arg: &str, fetch: Fetch) -> Result<Branch> {
 ///
 /// The function refuses a repository that origin is not a fork of. Its
 /// branch has a different history, and a fetch can be large.
-fn parent_branch(repo: &Repo, key: &str, origin: &str, number: u64) -> Result<Branch> {
+fn parent_branch(repo: &Repo, key: &RepoKey, origin: &RepoKey, number: u64) -> Result<Branch> {
     eprintln!("  pull       #{number} (asking GitHub for its fork)");
-    if !forked_from(origin)?.iter().any(|p| same_repo(p, key)) {
+    if !forked_from(origin)?.contains(key) {
         bail!("pull request {number} is in {key}, and origin {origin} is not a fork of it");
     }
     fork_branch(repo, &head_of(key, number)?)
-}
-
-/// Whether the keys `a` and `b` are for the same repository. GitHub ignores
-/// the case of the owner and of the name, and it gives them in the case of
-/// the page. A link or a remote can therefore have a different case.
-fn same_repo(a: &str, b: &str) -> bool {
-    a.eq_ignore_ascii_case(b)
 }
 
 fn is_link(arg: &str) -> bool {
@@ -282,6 +275,11 @@ struct Head {
 }
 
 impl Head {
+    /// The repository that has the branch.
+    fn key(&self) -> RepoKey {
+        RepoKey::from_url(&self.https_url)
+    }
+
     /// The local branches that can hold the head, in the order that
     /// `fork_branch` tries them.
     fn local_names(&self) -> [String; 2] {
@@ -301,7 +299,7 @@ const HEAD_FIELDS: &str =
 /// Ask GitHub for the head of a pull request. Git cannot give it:
 /// `refs/pull/<number>/head` holds the commit, and not the fork. `gh` has
 /// the login of the user, so a private fork is also possible.
-fn head_of(key: &str, number: u64) -> Result<Head> {
+fn head_of(key: &RepoKey, number: u64) -> Result<Head> {
     let text = gh(key, &format!("/pulls/{number}"), HEAD_FIELDS)
         .with_context(|| format!("gh cannot get pull request {number}"))?;
     parse_head(&text).with_context(|| {
@@ -311,22 +309,21 @@ fn head_of(key: &str, number: u64) -> Result<Head> {
 
 /// The repositories that `key` is a fork of: its parent and the source of
 /// its network. The result is empty when `key` is not a fork.
-fn forked_from(key: &str) -> Result<Vec<String>> {
-    let text = gh(key, "", ".parent.full_name, .source.full_name")
+fn forked_from(key: &RepoKey) -> Result<Vec<RepoKey>> {
+    let text = gh(key, "", ".parent.clone_url, .source.clone_url")
         .with_context(|| format!("gh cannot get {key}"))?;
-    let host = key.split('/').next().unwrap_or_default();
     // gh prints an empty line for a field that GitHub does not give.
     Ok(text
         .lines()
-        .filter(|name| !name.is_empty())
-        .map(|name| format!("{host}/{name}"))
+        .filter(|url| !url.is_empty())
+        .map(RepoKey::from_url)
         .collect())
 }
 
 /// Ask GitHub for `endpoint` of the repository `key`, and give the output of
 /// the filter `jq`.
-fn gh(key: &str, endpoint: &str, jq: &str) -> Result<String> {
-    let Some((host, path)) = key.split_once('/') else {
+fn gh(key: &RepoKey, endpoint: &str, jq: &str) -> Result<String> {
+    let Some((host, path)) = key.host_and_path() else {
         bail!("{key} has no host");
     };
     let o = Command::new("gh")
@@ -394,13 +391,13 @@ fn fork_branch(repo: &Repo, head: &Head) -> Result<Branch> {
 /// The remote for the fork of `head`. Add it if no remote has the URL of
 /// the fork.
 fn fork_remote(repo: &Repo, head: &Head) -> Result<String> {
-    let key = key_from_url(&head.https_url);
+    let key = head.key();
     let listing = git::out(&repo.common, &["remote", "-v"])?;
     // Each line is `<name>\t<url> (fetch)` or `<name>\t<url> (push)`.
     let remotes: Vec<&str> = listing
         .lines()
         .filter_map(|line| line.strip_suffix(" (fetch)")?.split_once('\t'))
-        .filter(|(_, url)| same_repo(&key_from_url(url), &key))
+        .filter(|(_, url)| RepoKey::from_url(url) == key)
         .map(|(name, _)| name)
         .collect();
     // More than one remote can have the fork: a person or an older wt can
@@ -437,10 +434,10 @@ fn fork_url<'a>(origin: &str, head: &'a Head) -> &'a str {
 ///
 ///   https://github.com/owner/repo/pull/123        -> (github.com/owner/repo, 123)
 ///   https://github.com/owner/repo/pull/123/files  -> (github.com/owner/repo, 123)
-fn pull_request(link: &str) -> Option<(String, u64)> {
+fn pull_request(link: &str) -> Option<(RepoKey, u64)> {
     let (repo, rest) = link.split_once("/pull/")?;
     let number = rest.split(['/', '?', '#']).next()?.parse().ok()?;
-    Some((key_from_url(repo), number))
+    Some((RepoKey::from_url(repo), number))
 }
 
 /// The branches at the commit of `pull_ref`. `listing` is the output of
@@ -514,7 +511,7 @@ mod tests {
             "https://github.com/owner/repo/pull/123#issuecomment-1",
         ] {
             assert_eq!(
-                pull_request(link),
+                pull_request(link).map(|(key, number)| (key.to_string(), number)),
                 Some(("github.com/owner/repo".to_string(), 123)),
                 "for {link}"
             );

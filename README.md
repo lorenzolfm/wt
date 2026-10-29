@@ -269,6 +269,11 @@ The key is the remote URL in a normal form. Each form of the URL gives the
 same key, so one file is correct for SSH and for HTTPS, and on each machine.
 Put this file in your dotfiles to keep the list.
 
+The case of the key does not matter, because GitHub ignores it. A clone of
+`you/Project` uses the entry for `you/project`. `wt` refuses a file with two
+keys that differ only in case. They are the same repository, so merge their
+lists into one entry.
+
 `wt` reads `$XDG_CONFIG_HOME/wt/config.toml` when that variable is set.
 
 The file holds no secret. It holds only path names. The content stays in the
