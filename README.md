@@ -105,7 +105,9 @@ and git cannot name the fork. `wt` asks GitHub with
 
 `wt` adds a remote for the fork with the name of its owner, for example
 `alice`. The URL has the form of the URL of origin, so SSH stays SSH. If a
-remote has the URL of the fork already, `wt` uses that remote. The local
+remote has the URL of the fork already, `wt` uses that remote. When more than
+one remote has it, `wt` uses the remote that the branch of the pull request
+tracks, so the same pull request always gives the same branch. The local
 branch has the name of the branch in the fork, and it tracks
 `alice/<branch>`. When a local branch has that name and tracks a different
 branch, for example `main`, the local branch is `alice-main`.
@@ -266,6 +268,11 @@ link = [".env.override", ".auth", ".envrc"]
 The key is the remote URL in a normal form. Each form of the URL gives the
 same key, so one file is correct for SSH and for HTTPS, and on each machine.
 Put this file in your dotfiles to keep the list.
+
+The case of the key does not matter, because GitHub ignores it. A clone of
+`you/Project` uses the entry for `you/project`. `wt` refuses a file with two
+keys that differ only in case. They are the same repository, so merge their
+lists into one entry.
 
 `wt` reads `$XDG_CONFIG_HOME/wt/config.toml` when that variable is set.
 

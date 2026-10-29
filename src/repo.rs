@@ -1,4 +1,4 @@
-use crate::config::{self, Config, RepoConfig};
+use crate::config::{Config, RepoConfig, RepoKey};
 use crate::git;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -65,7 +65,7 @@ impl Repo {
 
     /// The key for this repository in the global config: its remote URL in
     /// a normal form.
-    pub fn key(&self) -> Result<String> {
+    pub fn key(&self) -> Result<RepoKey> {
         let url = git::out(&self.common, &["remote", "get-url", "origin"]).with_context(|| {
             format!(
                 "{} has no remote named origin\n  wt uses the remote URL as the key in {}",
@@ -75,14 +75,14 @@ impl Repo {
                     .unwrap_or_else(|_| "the config file".into())
             )
         })?;
-        Ok(config::key_from_url(&url))
+        Ok(RepoKey::from_url(&url))
     }
 
-    pub fn is_managed(&self) -> bool {
-        match (self.key(), Config::load()) {
-            (Ok(key), Ok(cfg)) => cfg.repo(&key).is_some(),
-            _ => false,
-        }
+    /// Whether the global config has an entry for this repository. An error
+    /// means that wt cannot tell: origin is absent, or wt cannot read the
+    /// config.
+    pub fn is_managed(&self) -> Result<bool> {
+        Ok(Config::load()?.repo(&self.key()?).is_some())
     }
 
     /// The shared paths for this repository, from the global config.
@@ -195,7 +195,7 @@ impl Repo {
     }
 
     pub fn require_managed(&self) -> Result<()> {
-        if !self.is_managed() {
+        if !self.is_managed()? {
             bail!(
                 "wt does not control {}\n  run `wt init` first",
                 self.common.display()

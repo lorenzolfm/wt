@@ -1,4 +1,4 @@
-use crate::config::key_from_url;
+use crate::config::RepoKey;
 use crate::git;
 use crate::hook;
 use crate::repo::Repo;
@@ -194,7 +194,7 @@ fn branch_of(repo: &Repo, arg: &str, fetch: Fetch) -> Result<Branch> {
         Some([]) => {
             eprintln!("  pull       #{number} (asking GitHub for its fork)");
             let head = head_of(&key, number)?;
-            if key_from_url(&head.https_url) == origin {
+            if head.key() == origin {
                 bail!(
                     "origin no longer has {}, the branch of pull request {number}",
                     head.branch
@@ -218,12 +218,9 @@ fn branch_of(repo: &Repo, arg: &str, fetch: Fetch) -> Result<Branch> {
 ///
 /// The function refuses a repository that origin is not a fork of. Its
 /// branch has a different history, and a fetch can be large.
-fn parent_branch(repo: &Repo, key: &str, origin: &str, number: u64) -> Result<Branch> {
+fn parent_branch(repo: &Repo, key: &RepoKey, origin: &RepoKey, number: u64) -> Result<Branch> {
     eprintln!("  pull       #{number} (asking GitHub for its fork)");
-    if !forked_from(origin)?
-        .iter()
-        .any(|p| p.eq_ignore_ascii_case(key))
-    {
+    if !forked_from(origin)?.contains(key) {
         bail!("pull request {number} is in {key}, and origin {origin} is not a fork of it");
     }
     fork_branch(repo, &head_of(key, number)?)
@@ -277,6 +274,22 @@ struct Head {
     branch: String,
 }
 
+impl Head {
+    /// The repository that has the branch.
+    fn key(&self) -> RepoKey {
+        RepoKey::from_url(&self.https_url)
+    }
+
+    /// The local branches that can hold the head, in the order that
+    /// `fork_branch` tries them.
+    fn local_names(&self) -> [String; 2] {
+        [
+            self.branch.clone(),
+            format!("{}-{}", self.owner, self.branch),
+        ]
+    }
+}
+
 /// The fields of a `Head`, in the order that `parse_head` reads. GitHub
 /// gives no repository when the fork is deleted, and its fields are then
 /// empty.
@@ -286,7 +299,7 @@ const HEAD_FIELDS: &str =
 /// Ask GitHub for the head of a pull request. Git cannot give it:
 /// `refs/pull/<number>/head` holds the commit, and not the fork. `gh` has
 /// the login of the user, so a private fork is also possible.
-fn head_of(key: &str, number: u64) -> Result<Head> {
+fn head_of(key: &RepoKey, number: u64) -> Result<Head> {
     let text = gh(key, &format!("/pulls/{number}"), HEAD_FIELDS)
         .with_context(|| format!("gh cannot get pull request {number}"))?;
     parse_head(&text).with_context(|| {
@@ -296,22 +309,21 @@ fn head_of(key: &str, number: u64) -> Result<Head> {
 
 /// The repositories that `key` is a fork of: its parent and the source of
 /// its network. The result is empty when `key` is not a fork.
-fn forked_from(key: &str) -> Result<Vec<String>> {
-    let text = gh(key, "", ".parent.full_name, .source.full_name")
+fn forked_from(key: &RepoKey) -> Result<Vec<RepoKey>> {
+    let text = gh(key, "", ".parent.clone_url, .source.clone_url")
         .with_context(|| format!("gh cannot get {key}"))?;
-    let host = key.split('/').next().unwrap_or_default();
     // gh prints an empty line for a field that GitHub does not give.
     Ok(text
         .lines()
-        .filter(|name| !name.is_empty())
-        .map(|name| format!("{host}/{name}"))
+        .filter(|url| !url.is_empty())
+        .map(RepoKey::from_url)
         .collect())
 }
 
 /// Ask GitHub for `endpoint` of the repository `key`, and give the output of
 /// the filter `jq`.
-fn gh(key: &str, endpoint: &str, jq: &str) -> Result<String> {
-    let Some((host, path)) = key.split_once('/') else {
+fn gh(key: &RepoKey, endpoint: &str, jq: &str) -> Result<String> {
+    let Some((host, path)) = key.host_and_path() else {
         bail!("{key} has no host");
     };
     let o = Command::new("gh")
@@ -358,10 +370,7 @@ fn parse_head(text: &str) -> Option<Head> {
 fn fork_branch(repo: &Repo, head: &Head) -> Result<Branch> {
     let remote = fork_remote(repo, head)?;
     let want = format!("refs/remotes/{remote}/{}", head.branch);
-    let names = [
-        head.branch.clone(),
-        format!("{}-{}", head.owner, head.branch),
-    ];
+    let names = head.local_names();
     let Some(name) = names
         .iter()
         .find(|n| !has_local(repo, n) || repo.upstream(n).as_deref() == Some(want.as_str()))
@@ -382,14 +391,25 @@ fn fork_branch(repo: &Repo, head: &Head) -> Result<Branch> {
 /// The remote for the fork of `head`. Add it if no remote has the URL of
 /// the fork.
 fn fork_remote(repo: &Repo, head: &Head) -> Result<String> {
-    let key = key_from_url(&head.https_url);
+    let key = head.key();
     let listing = git::out(&repo.common, &["remote", "-v"])?;
     // Each line is `<name>\t<url> (fetch)` or `<name>\t<url> (push)`.
-    if let Some((name, _)) = listing
+    let remotes: Vec<&str> = listing
         .lines()
         .filter_map(|line| line.strip_suffix(" (fetch)")?.split_once('\t'))
-        .find(|(_, url)| key_from_url(url) == key)
-    {
+        .filter(|(_, url)| RepoKey::from_url(url) == key)
+        .map(|(name, _)| name)
+        .collect();
+    // More than one remote can have the fork: a person or an older wt can
+    // add a second one. A local branch can track the head on one of them,
+    // and a different remote gives a second branch for the same head.
+    let tracked = remotes.iter().find(|r| {
+        let want = format!("refs/remotes/{r}/{}", head.branch);
+        head.local_names()
+            .iter()
+            .any(|n| repo.upstream(n).as_deref() == Some(want.as_str()))
+    });
+    if let Some(name) = tracked.or(remotes.first()) {
         return Ok(name.to_string());
     }
 
@@ -414,10 +434,10 @@ fn fork_url<'a>(origin: &str, head: &'a Head) -> &'a str {
 ///
 ///   https://github.com/owner/repo/pull/123        -> (github.com/owner/repo, 123)
 ///   https://github.com/owner/repo/pull/123/files  -> (github.com/owner/repo, 123)
-fn pull_request(link: &str) -> Option<(String, u64)> {
+fn pull_request(link: &str) -> Option<(RepoKey, u64)> {
     let (repo, rest) = link.split_once("/pull/")?;
     let number = rest.split(['/', '?', '#']).next()?.parse().ok()?;
-    Some((key_from_url(repo), number))
+    Some((RepoKey::from_url(repo), number))
 }
 
 /// The branches at the commit of `pull_ref`. `listing` is the output of
@@ -491,7 +511,7 @@ mod tests {
             "https://github.com/owner/repo/pull/123#issuecomment-1",
         ] {
             assert_eq!(
-                pull_request(link),
+                pull_request(link).map(|(key, number)| (key.to_string(), number)),
                 Some(("github.com/owner/repo".to_string(), 123)),
                 "for {link}"
             );
@@ -639,6 +659,58 @@ bbb\trefs/pull/7/head
         );
         // The next link to the same pull request finds the same branch, and
         // it adds no second remote.
+        assert_eq!(fork_branch(&repo, &head).unwrap(), b);
+    }
+
+    /// GitHub ignores the case of a repository name, and a link has the case
+    /// of the page. The link `.../Origin/pull/7` is to a pull request in
+    /// origin, which is `.../origin`.
+    #[test]
+    fn a_link_to_origin_in_a_different_case_gives_the_branch_on_origin() {
+        let (tmp, repo) = repo();
+        let origin = tmp.path().join("origin");
+        git(&origin, &["switch", "-c", "feature"]);
+        git(&origin, &["commit", "--allow-empty", "-m", "two"]);
+        git(&origin, &["update-ref", "refs/pull/7/head", "feature"]);
+        let link = format!("https://{}/pull/7", tmp.path().join("Origin").display());
+
+        assert_eq!(
+            branch_of(&repo, &link, Fetch::Lazy).unwrap(),
+            Branch::on_origin("feature")
+        );
+    }
+
+    /// A remote can have the name of a fork in a case that GitHub does not
+    /// give, for example `getfloresta/floresta` for `getfloresta/Floresta`.
+    /// The fork is the same, so a second remote for it is not necessary.
+    #[test]
+    fn a_fork_that_a_remote_has_in_a_different_case_uses_that_remote() {
+        let (_tmp, repo) = repo();
+        git(
+            &repo.common,
+            &["remote", "add", "upstream", "git@github.com:alice/repo.git"],
+        );
+        let head = Head {
+            owner: "alice".into(),
+            https_url: "https://github.com/alice/Repo.git".into(),
+            ssh_url: "git@github.com:alice/Repo.git".into(),
+            branch: "feature".into(),
+        };
+
+        assert_eq!(fork_remote(&repo, &head).unwrap(), "upstream");
+    }
+
+    /// wt added the remote `alice`, and the branch of the head tracks it. A
+    /// person or an older wt then added `aaa` for the same fork. Git lists
+    /// `aaa` first.
+    #[test]
+    fn a_second_remote_for_a_fork_gives_the_same_branch() {
+        let (tmp, repo) = repo();
+        let head = fork(&tmp, "feature");
+        let b = fork_branch(&repo, &head).unwrap();
+        make(&repo, &b, true, None, Fetch::Lazy).unwrap();
+        git(&repo.common, &["remote", "add", "aaa", &head.https_url]);
+
         assert_eq!(fork_branch(&repo, &head).unwrap(), b);
     }
 

@@ -13,7 +13,7 @@ pub fn run(repo: &Repo) -> Result<()> {
 
     let manifest = repo.manifest()?;
     let shared = repo.shared();
-    let managed = repo.is_managed() && !manifest.link.is_empty();
+    let managed = repo.is_managed()? && !manifest.link.is_empty();
 
     let rows: Vec<(String, String)> = worktrees
         .iter()
