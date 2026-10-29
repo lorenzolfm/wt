@@ -34,7 +34,12 @@ function wt --wraps wt --description 'git worktree manager'
             # The status of wt, and not of the test: delete can print no
             # path and succeed, or print a path and fail.
             set -l st $status
-            test -n "$dest" -a -d "$dest"; and cd $dest
+            if test -n "$dest" -a -d "$dest"
+                cd $dest; or return
+            else if test -n "$dest"
+                # Text that is not a path, for example the output of --help.
+                printf '%s\n' $dest
+            end
             return $st
     end
 end
