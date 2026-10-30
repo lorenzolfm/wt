@@ -1,24 +1,17 @@
-use clap::CommandFactory;
-
 pub mod add;
+#[expect(clippy::print_stdout, reason = "the path for the shell")]
 pub mod cd;
+#[expect(clippy::print_stdout, reason = "the path for the shell")]
 pub mod clone;
+#[expect(clippy::print_stdout, reason = "the names for the completions")]
 pub mod completions;
+#[expect(clippy::print_stdout, reason = "the path for the shell")]
 pub mod delete;
 pub mod init;
+#[expect(clippy::print_stdout, reason = "the list of the worktrees")]
 pub mod ls;
 pub mod prune;
 pub mod share;
+#[expect(clippy::print_stdout, reason = "the code of the shell integration")]
 pub mod shell_init;
 pub mod sync;
-
-/// True when `name` is a command of wt.
-///
-/// A command always wins over a worktree with the same name, because clap
-/// reads the first word as a command before it reads it as a worktree.
-pub fn is_command(name: &str) -> bool {
-    name == "help"
-        || crate::Cli::command()
-            .get_subcommands()
-            .any(|c| c.get_name() == name || c.get_all_aliases().any(|a| a == name))
-}

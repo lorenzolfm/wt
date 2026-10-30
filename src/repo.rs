@@ -36,17 +36,27 @@ fn real(p: &Path) -> PathBuf {
 /// The tool accepts two layouts. Git resolves both with `--git-common-dir`.
 /// In the first layout the bare repository is the parent (`repo.git`).
 /// In the second layout the bare repository is `repo/.bare`.
+///
+/// A program outside this crate gets a `Repo` only from `discover`. A
+/// different path, for example a worktree, would put new worktrees inside it.
 #[derive(Debug, Clone)]
 pub struct Repo {
-    pub common: PathBuf,
+    pub(crate) common: PathBuf,
 }
 
 impl Repo {
+    /// The repository of the directory `from`, or of the current directory.
+    ///
+    /// The function reads the current directory only when `from` is absent.
+    /// The current directory of a program can be a directory that is no
+    /// longer present, for example a worktree that `wt delete` removed.
     pub fn discover(from: Option<&Path>) -> Result<Repo> {
-        let cwd = std::env::current_dir()?;
-        let start = from.unwrap_or(&cwd);
+        let start = match from {
+            Some(p) => p.to_path_buf(),
+            None => std::env::current_dir().context("wt cannot read the current directory")?,
+        };
         let common = git::out(
-            start,
+            &start,
             &["rev-parse", "--path-format=absolute", "--git-common-dir"],
         )
         .with_context(|| format!("there is no git repository at {}", start.display()))?;

@@ -126,6 +126,11 @@ from a fork is finished. Remove its worktree with `wt delete`.
 A branch can be in one worktree only. When a worktree has the branch already,
 `wt add` takes you to that worktree instead of making a new one.
 
+The second argument names the directory of the worktree, for example
+`wt add eng-1234 review`. The default is the branch name with `-` for `/`.
+The directory is beside the other worktrees, so `wt` refuses a path such as
+`../review` or `nested/review`.
+
 ### Go to a worktree
 
 ```sh
@@ -140,8 +145,8 @@ sufficient when only one worktree matches.
 A command wins over a worktree with the same name, and a short form such as
 `wt d` is a command. `wt ls` therefore prints the worktrees, also when a
 worktree has the name `ls`. The long form `wt cd ls` goes to that worktree,
-and `wt add` prints a warning when it makes a directory with the name of a
-command.
+and `wt add` prints a warning when the worktree that it makes or finds has the
+name of a command.
 
 ### See the worktrees
 
@@ -293,6 +298,10 @@ ln -sf "$PWD/target/release/wt" ~/.local/bin/wt
 ```sh
 nix profile install github:lorenzolfm/wt
 ```
+
+Keep the name `wt`. The hook points to the program, and `wt init` refuses a
+program with a different name. `wt` also shows a warning for a hook that
+points to a program with a different name.
 
 ## Shell integration
 
