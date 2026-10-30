@@ -3,7 +3,7 @@ use crate::git;
 use crate::hook;
 use crate::repo::Repo;
 use anyhow::{Context, Result, bail};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,6 +16,38 @@ pub enum Fetch {
     Always,
 }
 
+/// The name of a worktree directory. It is one component of a path, so the
+/// worktree is beside the other worktrees, and `wt cd <name>` can reach it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirName(String);
+
+impl DirName {
+    pub fn parse(name: &str) -> Result<DirName> {
+        let mut parts = Path::new(name).components();
+        match (parts.next(), parts.next()) {
+            (Some(Component::Normal(n)), None) if n == name => Ok(DirName(name.to_string())),
+            _ => bail!("{name} is not a directory name. a name has no '/', and it is not . or .."),
+        }
+    }
+}
+
+/// The worktree that has the branch.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// The command made the worktree.
+    Made(PathBuf),
+    /// A worktree had the branch already. The command ignored `dir`.
+    Present(PathBuf),
+}
+
+impl Outcome {
+    pub fn path(&self) -> &Path {
+        match self {
+            Outcome::Made(p) | Outcome::Present(p) => p,
+        }
+    }
+}
+
 /// Make a worktree for `branch`.
 ///
 /// `branch` can also be the link to a pull request on GitHub. The command
@@ -26,12 +58,12 @@ pub enum Fetch {
 /// The command finds the branch in this sequence: a local branch, then a
 /// remote branch, then a fetch from the network, then a new branch.
 ///
-/// The result is the path of the worktree. A branch can be in one worktree
-/// only. When a worktree has `branch` already, the result is the path of that
-/// worktree, so the shell goes there.
+/// The result is the worktree. A branch can be in one worktree only. When a
+/// worktree has `branch` already, the result is that worktree, so the shell
+/// goes there.
 ///
 /// The progress goes to stderr. The function prints nothing on stdout.
-pub fn run(repo: &Repo, branch: &str, dir: Option<&str>, fetch: Fetch) -> Result<PathBuf> {
+pub fn run(repo: &Repo, branch: &str, dir: Option<&DirName>, fetch: Fetch) -> Result<Outcome> {
     if let Some(w) = hook::check(repo) {
         eprintln!("warning: {w}");
     }
@@ -68,10 +100,15 @@ impl Branch {
     }
 }
 
-/// Make a worktree for `b` and return its path. For a link, the remote
-/// branch must be present: the command does not make a new branch for a pull
-/// request.
-fn make(repo: &Repo, b: &Branch, link: bool, dir: Option<&str>, fetch: Fetch) -> Result<PathBuf> {
+/// Make a worktree for `b`. For a link, the remote branch must be present:
+/// the command does not make a new branch for a pull request.
+fn make(
+    repo: &Repo,
+    b: &Branch,
+    link: bool,
+    dir: Option<&DirName>,
+    fetch: Fetch,
+) -> Result<Outcome> {
     let branch = &b.name;
 
     // A local branch can track a different branch, for example master when
@@ -86,13 +123,14 @@ fn make(repo: &Repo, b: &Branch, link: bool, dir: Option<&str>, fetch: Fetch) ->
         .find(|w| w.branch.as_deref() == Some(branch))
     {
         eprintln!("  {}  (branch {branch} is here already)", w.name());
-        return Ok(w.path);
+        return Ok(Outcome::Present(w.path));
     }
 
-    let name = dir
-        .map(str::to_string)
-        .unwrap_or_else(|| branch.replace('/', "-"));
-    let dest: PathBuf = repo.container().join(&name);
+    let name = match dir {
+        Some(d) => d.clone(),
+        None => DirName::parse(&branch.replace('/', "-"))?,
+    };
+    let dest: PathBuf = repo.container().join(&name.0);
     if dest.exists() {
         bail!("{} is already present", dest.display());
     }
@@ -150,7 +188,7 @@ fn make(repo: &Repo, b: &Branch, link: bool, dir: Option<&str>, fetch: Fetch) ->
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     // The hook makes the links.
     git::passthrough(&repo.common, &argv)?;
-    Ok(dest)
+    Ok(Outcome::Made(dest))
 }
 
 /// The branch for `arg`. A branch name gives that branch on origin. A link
@@ -545,6 +583,27 @@ bbb\trefs/pull/7/head
         assert_eq!(heads_at(LISTING, "refs/pull/8/head"), None);
     }
 
+    /// A path would put the worktree away from the other worktrees, or give
+    /// it the name of a different worktree. `wt cd` could not reach it.
+    #[test]
+    fn a_directory_name_is_one_component() {
+        for name in ["review", "eng-1234", ".hidden"] {
+            assert!(DirName::parse(name).is_ok(), "for {name}");
+        }
+        for path in [
+            "",
+            ".",
+            "..",
+            "../review",
+            "/tmp/review",
+            "nested/main",
+            "review/",
+            "./review",
+        ] {
+            assert!(DirName::parse(path).is_err(), "for {path}");
+        }
+    }
+
     /// A bare repository whose origin has one commit on master.
     fn repo() -> (TempDir, Repo) {
         let tmp = TempDir::new().unwrap();
@@ -591,15 +650,21 @@ bbb\trefs/pull/7/head
         crate::git::out(dir, &["rev-parse", "HEAD"]).unwrap()
     }
 
-    /// A program that uses the library takes the path from the result. The
-    /// second call gives the worktree that has the branch, and not the
-    /// directory that it names.
+    /// A program that uses the library takes the worktree from the result.
+    /// The second call finds the worktree that has the branch, and it does
+    /// not make the directory that it names.
     #[test]
-    fn the_result_is_the_path_of_the_worktree_that_has_the_branch() {
+    fn the_result_is_the_worktree_that_has_the_branch() {
         let (tmp, repo) = repo();
+        let other = DirName::parse("other").unwrap();
 
-        let made = run(&repo, "feature", None, Fetch::Never).unwrap();
-        let found = run(&repo, "feature", Some("other"), Fetch::Never).unwrap();
+        let Outcome::Made(made) = run(&repo, "feature", None, Fetch::Never).unwrap() else {
+            panic!("the first call must make the worktree");
+        };
+        let Outcome::Present(found) = run(&repo, "feature", Some(&other), Fetch::Never).unwrap()
+        else {
+            panic!("the second call must find the worktree");
+        };
 
         let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
         assert_eq!(real(&made), real(&tmp.path().join("feature")));

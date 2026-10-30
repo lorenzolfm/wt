@@ -1,6 +1,7 @@
 use crate::repo::Repo;
 use crate::seed::{self, Outcome};
 use anyhow::{Context, Result, bail};
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -33,6 +34,22 @@ pub fn install_target() -> Result<PathBuf> {
         }
     }
     let exe = std::env::current_exe().context("cannot find the path of this program")?;
+    exe_target(exe)
+}
+
+/// The hook target when the program at `exe` is the only choice.
+///
+/// A program that uses wt as a library is not wt. Git would run that program
+/// at each checkout, and each checkout would fail. The function therefore
+/// refuses a program with a different name.
+fn exe_target(exe: PathBuf) -> Result<PathBuf> {
+    if !is_wt(&exe) {
+        bail!(
+            "the hook must run wt, and this program is {}\n  \
+             install wt at ~/.local/bin/wt, then run `wt init`",
+            exe.display()
+        );
+    }
     if exe.starts_with("/nix/store") {
         bail!(
             "the program is at {}\n  \
@@ -45,6 +62,12 @@ pub fn install_target() -> Result<PathBuf> {
         );
     }
     Ok(exe)
+}
+
+/// True when `path` is the wt program. Only wt knows the hook: it reads its
+/// own name, `post-checkout`, to find that git runs it as the hook.
+fn is_wt(path: &Path) -> bool {
+    path.file_name() == Some(OsStr::new("wt"))
 }
 
 /// Make the `post-checkout` hook, or point it to a new path. Return the
@@ -85,6 +108,14 @@ pub fn check(repo: &Repo) -> Option<String> {
             .unwrap_or_else(|_| "?".into());
         return Some(format!(
             "the post-checkout hook points to {target}, and that path is not present\n  git ignores the hook and shows no error. run `wt init` to correct it"
+        ));
+    }
+    if let Ok(target) = fs::read_link(&hook)
+        && !is_wt(&target)
+    {
+        return Some(format!(
+            "the post-checkout hook points to {}, and that program is not wt\n  wt cannot make the links automatically. run `wt init` to correct it",
+            target.display()
         ));
     }
     None
@@ -142,4 +173,47 @@ fn report(shared: &Path, worktree: &Path, entries: &[String]) -> Result<()> {
         eprintln!("wt: made {linked} link(s)");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// A repository whose hook points to `program`, a file that is present.
+    fn hooked(program: &str) -> (TempDir, Repo) {
+        let tmp = TempDir::new().unwrap();
+        let repo = Repo {
+            common: tmp.path().to_path_buf(),
+        };
+        let target = tmp.path().join("bin").join(program);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, "").unwrap();
+        fs::create_dir_all(repo.hook_path().parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&target, repo.hook_path()).unwrap();
+        (tmp, repo)
+    }
+
+    /// A program that uses wt as a library can be in the hook. Git then runs
+    /// it at each checkout, and each checkout fails.
+    #[test]
+    fn a_hook_that_points_to_a_different_program_gives_a_warning() {
+        let (_tmp, repo) = hooked("luneta");
+        assert!(check(&repo).is_some());
+    }
+
+    #[test]
+    fn a_hook_that_points_to_wt_gives_no_warning() {
+        let (_tmp, repo) = hooked("wt");
+        assert_eq!(check(&repo), None);
+    }
+
+    #[test]
+    fn the_hook_points_only_to_wt() {
+        assert!(exe_target(PathBuf::from("/usr/bin/luneta")).is_err());
+        assert_eq!(
+            exe_target(PathBuf::from("/usr/bin/wt")).unwrap(),
+            PathBuf::from("/usr/bin/wt")
+        );
+    }
 }

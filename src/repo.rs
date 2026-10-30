@@ -36,9 +36,12 @@ fn real(p: &Path) -> PathBuf {
 /// The tool accepts two layouts. Git resolves both with `--git-common-dir`.
 /// In the first layout the bare repository is the parent (`repo.git`).
 /// In the second layout the bare repository is `repo/.bare`.
+///
+/// A program outside this crate gets a `Repo` only from `discover`. A
+/// different path, for example a worktree, would put new worktrees inside it.
 #[derive(Debug, Clone)]
 pub struct Repo {
-    pub common: PathBuf,
+    pub(crate) common: PathBuf,
 }
 
 impl Repo {

@@ -126,6 +126,11 @@ from a fork is finished. Remove its worktree with `wt delete`.
 A branch can be in one worktree only. When a worktree has the branch already,
 `wt add` takes you to that worktree instead of making a new one.
 
+The second argument names the directory of the worktree, for example
+`wt add eng-1234 review`. The default is the branch name with `-` for `/`.
+The directory is beside the other worktrees, so `wt` refuses a path such as
+`../review` or `nested/review`.
+
 ### Go to a worktree
 
 ```sh

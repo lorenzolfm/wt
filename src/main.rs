@@ -63,7 +63,8 @@ enum Command {
         /// The branch, or the link to a pull request on GitHub
         branch: String,
         /// The directory name. The default is the branch name with '-' for '/'
-        dir: Option<String>,
+        #[arg(value_parser = cmd::add::DirName::parse)]
+        dir: Option<cmd::add::DirName>,
         /// Fetch first, also if the branch is known
         #[arg(long, conflicts_with = "no_fetch")]
         fetch: bool,
@@ -175,10 +176,10 @@ fn dispatch() -> Result<()> {
                     } else {
                         cmd::add::Fetch::Lazy
                     };
-                    let path = cmd::add::run(&repo, &branch, dir.as_deref(), mode)?;
-                    warn_if_command(&path);
+                    let outcome = cmd::add::run(&repo, &branch, dir.as_ref(), mode)?;
+                    warn_if_command(outcome.path());
                     // The output gives the path to the shell.
-                    println!("{}", path.display());
+                    println!("{}", outcome.path().display());
                     Ok(())
                 }
                 Command::Prune {
