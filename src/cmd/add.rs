@@ -64,13 +64,17 @@ impl Outcome {
 ///
 /// The progress goes to stderr. The function prints nothing on stdout.
 pub fn run(repo: &Repo, branch: &str, dir: Option<&DirName>, fetch: Fetch) -> Result<Outcome> {
+    // The function finds a branch with the network, and it can add a remote
+    // or change the upstream branch. A repository with no container refuses
+    // before each of them.
+    let container = repo.container()?;
     if let Some(w) = hook::check(repo) {
         eprintln!("warning: {w}");
     }
 
     let link = is_link(branch);
     let b = branch_of(repo, branch, fetch)?;
-    make(repo, &b, link, dir, fetch)
+    make(repo, container, &b, link, dir, fetch)
 }
 
 /// A local branch and the remote branch that it tracks.
@@ -100,10 +104,12 @@ impl Branch {
     }
 }
 
-/// Make a worktree for `b`. For a link, the remote branch must be present:
-/// the command does not make a new branch for a pull request.
+/// Make a worktree for `b` in `container`. For a link, the remote branch
+/// must be present: the command does not make a new branch for a pull
+/// request.
 fn make(
     repo: &Repo,
+    container: &Path,
     b: &Branch,
     link: bool,
     dir: Option<&DirName>,
@@ -130,7 +136,7 @@ fn make(
         Some(d) => d.clone(),
         None => DirName::parse(&branch.replace('/', "-"))?,
     };
-    let dest: PathBuf = repo.container().join(&name.0);
+    let dest: PathBuf = container.join(&name.0);
     if dest.exists() {
         bail!("{} is already present", dest.display());
     }
@@ -620,7 +626,7 @@ bbb\trefs/pull/7/head
             &["remote", "add", "origin", origin.to_str().unwrap()],
         );
         git(&bare, &["fetch", "origin", "master"]);
-        (tmp, Repo { common: bare })
+        (tmp, Repo::at(bare))
     }
 
     /// A fork of origin that alice owns. Its `branch` has a commit that
@@ -672,6 +678,46 @@ bbb\trefs/pull/7/head
         assert!(!tmp.path().join("other").exists());
     }
 
+    /// The common directory of a clone with a work tree is its `.git`. A new
+    /// worktree would go inside it, so the command makes none. It also makes
+    /// no branch first.
+    #[test]
+    fn a_clone_with_a_work_tree_gets_no_worktree() {
+        let (tmp, _) = repo();
+        let plain = tmp.path().join("plain");
+        let origin = tmp.path().join("origin");
+        git(
+            tmp.path(),
+            &["clone", origin.to_str().unwrap(), plain.to_str().unwrap()],
+        );
+        let repo = Repo::discover(Some(&plain)).unwrap();
+
+        let error = run(&repo, "feature", None, Fetch::Never).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("is the .git of a clone with a work tree"),
+            "{error:#}"
+        );
+        assert!(!plain.join(".git").join("feature").exists());
+        assert!(!has_local(&repo, "feature"));
+    }
+
+    /// In a worktree of a bare repository, `git rev-parse
+    /// --is-bare-repository` gives false. The repository of the worktree
+    /// gives the same container as the bare repository.
+    #[test]
+    fn a_worktree_of_a_bare_repository_gives_the_same_container() {
+        let (tmp, repo) = repo();
+        let made = run(&repo, "master", None, Fetch::Never).unwrap();
+
+        let from_worktree = Repo::discover(Some(made.path())).unwrap();
+
+        let real = |p: &Path| std::fs::canonicalize(p).unwrap();
+        assert_eq!(real(from_worktree.container().unwrap()), real(tmp.path()));
+    }
+
     /// `git worktree add -b feature <path> origin/master` gives a branch that
     /// tracks master. The repository has no remote-tracking ref for the branch
     /// of the pull request yet.
@@ -699,7 +745,15 @@ bbb\trefs/pull/7/head
         let head = fork(&tmp, "fix/keysets");
 
         let b = fork_branch(&repo, &head).unwrap();
-        make(&repo, &b, true, None, Fetch::Lazy).unwrap();
+        make(
+            &repo,
+            repo.container().unwrap(),
+            &b,
+            true,
+            None,
+            Fetch::Lazy,
+        )
+        .unwrap();
 
         assert_eq!(
             repo.upstream("fix/keysets").as_deref(),
@@ -723,7 +777,15 @@ bbb\trefs/pull/7/head
         let head = fork(&tmp, "master");
 
         let b = fork_branch(&repo, &head).unwrap();
-        make(&repo, &b, true, None, Fetch::Lazy).unwrap();
+        make(
+            &repo,
+            repo.container().unwrap(),
+            &b,
+            true,
+            None,
+            Fetch::Lazy,
+        )
+        .unwrap();
 
         assert_eq!(
             repo.upstream("alice-master").as_deref(),
@@ -784,7 +846,15 @@ bbb\trefs/pull/7/head
         let (tmp, repo) = repo();
         let head = fork(&tmp, "feature");
         let b = fork_branch(&repo, &head).unwrap();
-        make(&repo, &b, true, None, Fetch::Lazy).unwrap();
+        make(
+            &repo,
+            repo.container().unwrap(),
+            &b,
+            true,
+            None,
+            Fetch::Lazy,
+        )
+        .unwrap();
         git(&repo.common, &["remote", "add", "aaa", &head.https_url]);
 
         assert_eq!(fork_branch(&repo, &head).unwrap(), b);
@@ -801,7 +871,17 @@ bbb\trefs/pull/7/head
 
         let b = fork_branch(&repo, &head).unwrap();
 
-        assert!(make(&repo, &b, true, None, Fetch::Lazy).is_err());
+        assert!(
+            make(
+                &repo,
+                repo.container().unwrap(),
+                &b,
+                true,
+                None,
+                Fetch::Lazy
+            )
+            .is_err()
+        );
         assert!(!has_local(&repo, "absent"));
         assert!(!tmp.path().join("absent").exists());
     }

@@ -1,7 +1,7 @@
 use crate::git;
 use crate::repo::{Repo, Worktree};
 use anyhow::{Result, bail};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Remove each worktree with `git worktree remove`. Then delete its branch.
 ///
@@ -107,7 +107,12 @@ fn landing(repo: &Repo) -> PathBuf {
         .into_iter()
         .find(|w| local.is_some() && w.branch.as_deref() == local && w.path.exists())
         .map(|w| w.path)
-        .unwrap_or_else(|| repo.container())
+        // A clone with a work tree has no container. Its git directory is
+        // then the last choice.
+        .unwrap_or_else(|| {
+            repo.container()
+                .map_or_else(|_| repo.common.clone(), Path::to_path_buf)
+        })
 }
 
 fn remove(repo: &Repo, wt: &Worktree, force: bool) -> Result<()> {
@@ -170,7 +175,7 @@ mod tests {
                 ],
             );
         }
-        (tmp, Repo { common: bare })
+        (tmp, Repo::at(bare))
     }
 
     fn targets(names: &[&str]) -> Vec<String> {
