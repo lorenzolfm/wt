@@ -515,7 +515,75 @@ fn heads_at(listing: &str, pull_ref: &str) -> Option<Vec<String>> {
 /// branch of a fork. Both can start with '-'. Without `--`, git reads
 /// `--upload-pack=<command>` as an option and runs the command.
 fn fetch_branch(repo: &Repo, b: &Branch) {
+    prune_blockers(repo, b);
     git::quiet(&repo.common, &["fetch", "--", &b.remote, &b.upstream]);
+}
+
+/// Delete each remote-tracking ref that blocks the ref of `b`, when the
+/// remote no longer has its branch.
+///
+/// Git cannot hold both `origin/security` and `origin/security/waf`: one
+/// name would be a file and a directory. When origin deletes `security` and
+/// then makes `security/waf`, the ref `origin/security` stays until a prune,
+/// and each fetch of `security/waf` fails. `git remote prune` deletes each
+/// stale ref. This function deletes only the refs that block `b`.
+fn prune_blockers(repo: &Repo, b: &Branch) {
+    let prefix = format!("refs/remotes/{}/", b.remote);
+    let top = b.upstream.split('/').next().unwrap_or(&b.upstream);
+    // The pattern gives the ref `top` and each ref below it.
+    let Ok(refs) = git::out(
+        &repo.common,
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            &format!("{prefix}{top}"),
+        ],
+    ) else {
+        return;
+    };
+    let blockers: Vec<&str> = refs
+        .lines()
+        .filter_map(|r| r.strip_prefix(&prefix))
+        .filter(|name| blocks(name, &b.upstream))
+        .collect();
+    if blockers.is_empty() {
+        return;
+    }
+
+    let mut args = vec!["ls-remote".to_string(), "--".into(), b.remote.clone()];
+    args.extend(blockers.iter().map(|name| format!("refs/heads/{name}")));
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    // Without the listing, a ref that blocks `b` can be the ref of a branch
+    // that the remote still has.
+    let Ok(listing) = git::out(&repo.common, &argv) else {
+        return;
+    };
+    let present: Vec<&str> = listing
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(_, r)| r)
+        .collect();
+    for name in blockers {
+        if present.contains(&format!("refs/heads/{name}").as_str()) {
+            continue;
+        }
+        if git::ok(
+            &repo.common,
+            &["update-ref", "-d", &format!("{prefix}{name}")],
+        ) {
+            eprintln!(
+                "  pruned     {}/{name} ({} deleted the branch)",
+                b.remote, b.remote
+            );
+        }
+    }
+}
+
+/// Whether git cannot hold the branches `a` and `b` together: the name of
+/// one is a directory in the name of the other.
+fn blocks(a: &str, b: &str) -> bool {
+    let below = |x: &str, y: &str| x.strip_prefix(y).is_some_and(|rest| rest.starts_with('/'));
+    below(a, b) || below(b, a)
 }
 
 fn track_args(dest: &str, branch: &str, remote_ref: &str) -> Vec<String> {
@@ -743,6 +811,49 @@ bbb\trefs/pull/7/head
             Some("refs/remotes/origin/feature")
         );
         assert!(has_remote(&repo, "origin/feature"));
+    }
+
+    /// Git cannot hold both `origin/security` and `origin/security/waf`. The
+    /// repository has the ref of a branch that origin deleted, and origin
+    /// then made a branch below it, or above it.
+    #[test]
+    fn a_ref_of_a_branch_that_origin_deleted_does_not_block_the_fetch() {
+        for (old, new) in [("security", "security/waf"), ("security/waf", "security")] {
+            let (tmp, repo) = repo();
+            let origin = tmp.path().join("origin");
+            git(&origin, &["branch", old]);
+            git(&repo.common, &["fetch", "origin", old]);
+            git(&origin, &["branch", "-D", old]);
+            git(&origin, &["branch", new]);
+
+            make(&repo, &Branch::on_origin(new), true, None, Fetch::Lazy).unwrap();
+
+            assert_eq!(
+                repo.upstream(new),
+                Some(format!("refs/remotes/origin/{new}")),
+                "for {old} then {new}"
+            );
+        }
+    }
+
+    /// The new branch `security/waf` cannot be on origin while origin has
+    /// `security`, but the ref of `security` is not stale.
+    #[test]
+    fn a_ref_of_a_branch_that_origin_has_stays() {
+        let (tmp, repo) = repo();
+        git(&tmp.path().join("origin"), &["branch", "security"]);
+        git(&repo.common, &["fetch", "origin", "security"]);
+
+        make(
+            &repo,
+            &Branch::on_origin("security/waf"),
+            false,
+            None,
+            Fetch::Lazy,
+        )
+        .unwrap();
+
+        assert!(has_remote(&repo, "origin/security"));
     }
 
     #[test]
