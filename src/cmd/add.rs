@@ -515,7 +515,119 @@ fn heads_at(listing: &str, pull_ref: &str) -> Option<Vec<String>> {
 /// branch of a fork. Both can start with '-'. Without `--`, git reads
 /// `--upload-pack=<command>` as an option and runs the command.
 fn fetch_branch(repo: &Repo, b: &Branch) {
+    prune_blockers(repo, b);
     git::quiet(&repo.common, &["fetch", "--", &b.remote, &b.upstream]);
+}
+
+/// Delete each remote-tracking ref that blocks the ref of `b`, when the
+/// remote no longer has its branch.
+///
+/// Git cannot hold both `origin/security` and `origin/security/waf`: one
+/// name would be a file and a directory. When origin deletes `security` and
+/// then makes `security/waf`, the ref `origin/security` stays until a prune,
+/// and each fetch of `security/waf` fails. `git remote prune` deletes each
+/// stale ref. This function deletes only the refs that block `b`.
+fn prune_blockers(repo: &Repo, b: &Branch) {
+    let prefix = format!("refs/remotes/{}/", b.remote);
+    let top = b.upstream.split('/').next().unwrap_or(&b.upstream);
+    // The pattern gives the ref `top` and each ref below it. Each line is
+    // `<symref>\t<commit>\t<ref>`. A symbolic ref such as `origin/HEAD` is
+    // not the ref of a branch, and `default_base` reads it, so it stays.
+    let Ok(refs) = git::out(
+        &repo.common,
+        &[
+            "for-each-ref",
+            "--format=%(symref)%09%(objectname)%09%(refname)",
+            &format!("{prefix}{top}"),
+        ],
+    ) else {
+        return;
+    };
+    let blockers: Vec<(&str, &str)> = refs
+        .lines()
+        .filter_map(|line| line.strip_prefix('\t')?.split_once('\t'))
+        .filter(|(_, r)| {
+            r.strip_prefix(&prefix)
+                .is_some_and(|name| blocks(name, &b.upstream))
+        })
+        .collect();
+    if blockers.is_empty() {
+        return;
+    }
+
+    // A fetch can copy more than branches to these refs, for example with
+    // `+refs/pull/*/head:refs/remotes/origin/pr/*`. A ref is stale only when
+    // the remote has none of its sources. A ref with no source is not from
+    // a fetch, and it stays.
+    let Ok(specs) = git::out(
+        &repo.common,
+        &["config", "--get-all", &format!("remote.{}.fetch", b.remote)],
+    ) else {
+        return;
+    };
+    let blockers: Vec<(&str, &str, Vec<String>)> = blockers
+        .into_iter()
+        .map(|(commit, r)| (commit, r, sources(&specs, r)))
+        .filter(|(_, _, s)| !s.is_empty())
+        .collect();
+    if blockers.is_empty() {
+        return;
+    }
+
+    let mut args = vec!["ls-remote".to_string(), "--".into(), b.remote.clone()];
+    args.extend(blockers.iter().flat_map(|(_, _, s)| s.iter().cloned()));
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    // Without the listing, a ref that blocks `b` can be the ref of a branch
+    // that the remote still has.
+    let Ok(listing) = git::out(&repo.common, &argv) else {
+        return;
+    };
+    let present: Vec<&str> = listing
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(_, r)| r)
+        .collect();
+    for (commit, r, sources) in blockers {
+        if sources.iter().any(|s| present.contains(&s.as_str())) {
+            continue;
+        }
+        // With `commit`, git keeps a ref that a different fetch changed.
+        if git::ok(&repo.common, &["update-ref", "--no-deref", "-d", r, commit]) {
+            eprintln!(
+                "  pruned     {} ({} deleted the branch)",
+                r.strip_prefix("refs/remotes/").unwrap_or(r),
+                b.remote
+            );
+        }
+    }
+}
+
+/// The refs on the remote that a fetch copies to the local ref `local`.
+/// `specs` holds the fetch refspecs of the remote, one on each line. For
+/// `refs/remotes/origin/pr/1`:
+///
+///   +refs/heads/*:refs/remotes/origin/*          -> refs/heads/pr/1
+///   +refs/pull/*/head:refs/remotes/origin/pr/*   -> refs/pull/1/head
+///   +refs/heads/main:refs/remotes/origin/main    -> (none)
+fn sources(specs: &str, local: &str) -> Vec<String> {
+    specs
+        .lines()
+        .filter_map(|spec| spec.trim_start_matches('+').split_once(':'))
+        .filter_map(|(src, dst)| match dst.split_once('*') {
+            Some((head, tail)) => {
+                let middle = local.strip_prefix(head)?.strip_suffix(tail)?;
+                Some(src.replacen('*', middle, 1))
+            }
+            None => (dst == local).then(|| src.to_string()),
+        })
+        .collect()
+}
+
+/// Whether git cannot hold the branches `a` and `b` together: the name of
+/// one is a directory in the name of the other.
+fn blocks(a: &str, b: &str) -> bool {
+    let below = |x: &str, y: &str| x.strip_prefix(y).is_some_and(|rest| rest.starts_with('/'));
+    below(a, b) || below(b, a)
 }
 
 fn track_args(dest: &str, branch: &str, remote_ref: &str) -> Vec<String> {
@@ -743,6 +855,124 @@ bbb\trefs/pull/7/head
             Some("refs/remotes/origin/feature")
         );
         assert!(has_remote(&repo, "origin/feature"));
+    }
+
+    /// Git cannot hold both `origin/security` and `origin/security/waf`. The
+    /// repository has the ref of a branch that origin deleted, and origin
+    /// then made a branch below it, or above it.
+    #[test]
+    fn a_ref_of_a_branch_that_origin_deleted_does_not_block_the_fetch() {
+        for (old, new) in [("security", "security/waf"), ("security/waf", "security")] {
+            let (tmp, repo) = repo();
+            let origin = tmp.path().join("origin");
+            git(&origin, &["branch", old]);
+            git(&repo.common, &["fetch", "origin", old]);
+            git(&origin, &["branch", "-D", old]);
+            git(&origin, &["branch", new]);
+
+            make(&repo, &Branch::on_origin(new), true, None, Fetch::Lazy).unwrap();
+
+            assert_eq!(
+                repo.upstream(new),
+                Some(format!("refs/remotes/origin/{new}")),
+                "for {old} then {new}"
+            );
+        }
+    }
+
+    /// The new branch `security/waf` cannot be on origin while origin has
+    /// `security`, but the ref of `security` is not stale.
+    #[test]
+    fn a_ref_of_a_branch_that_origin_has_stays() {
+        let (tmp, repo) = repo();
+        git(&tmp.path().join("origin"), &["branch", "security"]);
+        git(&repo.common, &["fetch", "origin", "security"]);
+
+        make(
+            &repo,
+            &Branch::on_origin("security/waf"),
+            false,
+            None,
+            Fetch::Lazy,
+        )
+        .unwrap();
+
+        assert!(has_remote(&repo, "origin/security"));
+    }
+
+    /// `origin/HEAD` blocks `HEAD/x`, but it is not the ref of a branch. Git
+    /// deletes the ref that a symbolic ref points to, here `origin/master`.
+    #[test]
+    fn a_symbolic_ref_stays() {
+        let (_tmp, repo) = repo();
+        git(
+            &repo.common,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/master",
+            ],
+        );
+
+        make(
+            &repo,
+            &Branch::on_origin("HEAD/x"),
+            false,
+            None,
+            Fetch::Lazy,
+        )
+        .unwrap();
+
+        assert!(has_remote(&repo, "origin/master"));
+        assert_eq!(
+            git::out(&repo.common, &["symbolic-ref", "refs/remotes/origin/HEAD"]).unwrap(),
+            "refs/remotes/origin/master"
+        );
+    }
+
+    /// A fetch refspec can copy pull requests below `origin/pr`. Origin has
+    /// no branch `pr/1`, but it has the pull request.
+    #[test]
+    fn a_ref_that_a_different_refspec_gives_stays() {
+        let (tmp, repo) = repo();
+        git(
+            &tmp.path().join("origin"),
+            &["update-ref", "refs/pull/1/head", "HEAD"],
+        );
+        git(
+            &repo.common,
+            &[
+                "config",
+                "--add",
+                "remote.origin.fetch",
+                "+refs/pull/*/head:refs/remotes/origin/pr/*",
+            ],
+        );
+        git(&repo.common, &["fetch", "origin"]);
+
+        make(&repo, &Branch::on_origin("pr"), false, None, Fetch::Lazy).unwrap();
+
+        assert!(has_remote(&repo, "origin/pr/1"));
+    }
+
+    #[test]
+    fn the_sources_of_a_ref_come_from_each_refspec_that_gives_it() {
+        let specs = "+refs/heads/*:refs/remotes/origin/*\n\
+                     +refs/pull/*/head:refs/remotes/origin/pr/*\n\
+                     ^refs/heads/skip\n\
+                     refs/heads/main";
+        assert_eq!(
+            sources(specs, "refs/remotes/origin/pr/1"),
+            ["refs/heads/pr/1", "refs/pull/1/head"]
+        );
+        assert_eq!(
+            sources(
+                "+refs/heads/main:refs/remotes/origin/main",
+                "refs/remotes/origin/main"
+            ),
+            ["refs/heads/main"]
+        );
+        assert!(sources(specs, "refs/remotes/upstream/main").is_empty());
     }
 
     #[test]

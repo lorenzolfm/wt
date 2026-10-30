@@ -73,6 +73,12 @@ Steps 1 and 2 do not use the network. The command does step 3 only if steps 1
 and 2 find no branch. Step 3 prevents an error: without it, `wt` can make a
 local branch while a remote branch with the same name is already present.
 
+Git cannot hold both `origin/security` and `origin/security/waf`. When origin
+deletes `security` and then makes `security/waf`, the ref `origin/security`
+stays until a prune, and each fetch of `security/waf` fails. Before a fetch,
+`wt` deletes each ref that blocks the branch, if origin no longer has its
+branch. `git remote prune` deletes each stale ref, but `wt` deletes only these.
+
 Use the option `--no-fetch` to stay offline. Use the option `--fetch` to do a
 fetch first.
 
