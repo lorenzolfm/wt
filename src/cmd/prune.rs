@@ -215,7 +215,10 @@ fn facts(
         is_base: false,
         detached: false,
         on_origin: has_ref(repo, &format!("refs/remotes/origin/{branch}")),
-        merged: git::ok(&repo.common, &["merge-base", "--is-ancestor", branch, base]),
+        merged: git::ok(
+            &repo.common,
+            &["merge-base", "--is-ancestor", "--", branch, base],
+        ),
         gone: upstream.as_deref().is_some_and(|r| !has_ref(repo, r)),
         // Git does not list the files that it ignores, which is the same
         // rule that `git worktree remove` uses.
@@ -266,11 +269,11 @@ fn remove(repo: &Repo, wt: &Worktree, force: bool) -> Result<()> {
 /// work is finished, so it deletes the branch and says that it did.
 fn drop_branch(repo: &Repo, wt: &Worktree, reason: Reason) {
     let Some(branch) = &wt.branch else { return };
-    if git::out(&repo.common, &["branch", "-d", branch]).is_ok() {
+    if git::out(&repo.common, &["branch", "-d", "--", branch]).is_ok() {
         eprintln!("  deleted    branch {branch}");
         return;
     }
-    if git::ok(&repo.common, &["branch", "-D", branch]) {
+    if git::ok(&repo.common, &["branch", "-D", "--", branch]) {
         match reason {
             Reason::Merged => eprintln!("  deleted    branch {branch} (forced)"),
             Reason::Gone => {

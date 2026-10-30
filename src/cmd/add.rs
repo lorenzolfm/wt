@@ -139,12 +139,18 @@ fn make(
 
     if fetch == Fetch::Always {
         eprintln!("  fetching   {} {}", b.remote, b.upstream);
-        git::quiet(&repo.common, &["fetch", &b.remote, &b.upstream]);
+        fetch_branch(repo, b);
     }
 
     let args: Vec<String> = if has_local(repo, branch) {
         eprintln!("  branch     {branch} (local)");
-        vec!["worktree".into(), "add".into(), dest_str, branch.into()]
+        vec![
+            "worktree".into(),
+            "add".into(),
+            "--".into(),
+            dest_str,
+            branch.into(),
+        ]
     } else if has_remote(repo, &remote_ref) {
         eprintln!("  branch     {branch} (tracks {remote_ref})");
         track_args(&dest_str, branch, &remote_ref)
@@ -152,7 +158,7 @@ fn make(
         // A branch that is not present is the usual condition here. A failed
         // fetch is therefore an expected result, and its output is not useful.
         let found_remotely = fetch != Fetch::Never && {
-            git::quiet(&repo.common, &["fetch", &b.remote, &b.upstream]);
+            fetch_branch(repo, b);
             has_remote(repo, &remote_ref)
         };
 
@@ -163,7 +169,7 @@ fn make(
             // A new branch would not have the commits of the pull request,
             // and the worktree would look correct.
             bail!(
-                "wt cannot fetch {remote_ref}\n  run git fetch {} {} to see why",
+                "wt cannot fetch {remote_ref}\n  run git fetch -- {} {} to see why",
                 b.remote,
                 b.upstream
             );
@@ -179,6 +185,7 @@ fn make(
                 "--no-track".into(),
                 "-b".into(),
                 branch.into(),
+                "--".into(),
                 dest_str,
                 base,
             ]
@@ -280,11 +287,11 @@ fn track(repo: &Repo, b: &Branch) -> Result<()> {
 
     if !has_remote(repo, &remote_ref) {
         eprintln!("  fetching   {} {}", b.remote, b.upstream);
-        git::quiet(&repo.common, &["fetch", &b.remote, &b.upstream]);
+        fetch_branch(repo, b);
     }
     git::out(
         &repo.common,
-        &["branch", "--set-upstream-to", &remote_ref, &b.name],
+        &["branch", "--set-upstream-to", &remote_ref, "--", &b.name],
     )?;
 
     let was = was
@@ -448,7 +455,7 @@ fn fork_remote(repo: &Repo, head: &Head) -> Result<String> {
 
     let origin = git::out(&repo.common, &["remote", "get-url", "origin"])?;
     let url = fork_url(&origin, head);
-    git::out(&repo.common, &["remote", "add", &head.owner, url])?;
+    git::out(&repo.common, &["remote", "add", "--", &head.owner, url])?;
     eprintln!("  remote     {} ({url})", head.owner);
     Ok(head.owner.clone())
 }
@@ -491,6 +498,16 @@ fn heads_at(listing: &str, pull_ref: &str) -> Option<Vec<String>> {
     )
 }
 
+/// Fetch the branch of `b` from its remote. A failure is a usual result:
+/// the remote can have no such branch.
+///
+/// The user gives the name of the branch, and GitHub gives the name of the
+/// branch of a fork. Both can start with '-'. Without `--`, git reads
+/// `--upload-pack=<command>` as an option and runs the command.
+fn fetch_branch(repo: &Repo, b: &Branch) {
+    git::quiet(&repo.common, &["fetch", "--", &b.remote, &b.upstream]);
+}
+
 fn track_args(dest: &str, branch: &str, remote_ref: &str) -> Vec<String> {
     vec![
         "worktree".into(),
@@ -498,6 +515,7 @@ fn track_args(dest: &str, branch: &str, remote_ref: &str) -> Vec<String> {
         "--track".into(),
         "-b".into(),
         branch.into(),
+        "--".into(),
         dest.into(),
         remote_ref.into(),
     ]
@@ -670,6 +688,19 @@ bbb\trefs/pull/7/head
         assert_eq!(real(&made), real(&tmp.path().join("feature")));
         assert_eq!(real(&found), real(&made));
         assert!(!tmp.path().join("other").exists());
+    }
+
+    /// Git reads `--upload-pack=<command>` as an option, and it runs the
+    /// command when the remote is a path, as origin is here. A program that
+    /// uses the library can pass a name that it did not write.
+    #[test]
+    fn a_branch_name_with_a_dash_first_runs_no_command() {
+        let (tmp, repo) = repo();
+        let ran = tmp.path().join("ran");
+        let name = format!("--upload-pack=touch {}", ran.display());
+
+        assert!(run(&repo, &name, None, Fetch::Lazy).is_err());
+        assert!(!ran.exists());
     }
 
     /// `git worktree add -b feature <path> origin/master` gives a branch that

@@ -1,3 +1,7 @@
+//! Each function runs git with `args`. Git reads an argument with '-' first
+//! as an option, also after a positional argument. A name from the caller or
+//! from GitHub can start with '-', so it goes after `--`.
+
 use anyhow::{Context, Result, bail};
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::Path;
