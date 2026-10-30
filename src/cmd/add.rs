@@ -712,6 +712,7 @@ bbb\trefs/pull/7/head
         for name in [
             format!("--upload-pack=touch {}", ran.display()),
             "master:refs/heads/other".to_string(),
+            "HEAD".to_string(),
         ] {
             let error = run(&repo, &name, None, Fetch::Lazy).unwrap_err();
             assert!(
