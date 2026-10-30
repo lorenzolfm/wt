@@ -22,7 +22,7 @@ pub fn run(url: &str, dir: Option<&str>) -> Result<()> {
     fs::create_dir_all(&container)?;
     let bare = container.join(".bare");
     let bare_str = bare.to_string_lossy().into_owned();
-    git::passthrough(&cwd, &["clone", "--bare", url, &bare_str])?;
+    git::passthrough(&cwd, &["clone", "--bare", "--", url, &bare_str])?;
 
     fs::write(container.join(".git"), "gitdir: ./.bare\n")
         .context("wt cannot write the .git file")?;
@@ -41,6 +41,11 @@ pub fn run(url: &str, dir: Option<&str>) -> Result<()> {
 
     let default = git::out(&bare, &["symbolic-ref", "--short", "HEAD"])
         .unwrap_or_else(|_| "main".to_string());
+    // Origin chooses its HEAD, and `git worktree add -b` gives the name to
+    // `git branch` with no `--`.
+    if !git::is_branch_name(&bare, &default) {
+        bail!("the HEAD of origin is {default}, and it is not a valid branch name");
+    }
     let _ = git::out(
         &bare,
         &[
@@ -76,9 +81,9 @@ fn add_worktree(repo: &Repo, dest: &Path, branch: &str) -> Result<()> {
     // not present. Git does not list it.
     let empty = git::out(&repo.common, &["for-each-ref", "--count=1"])?.is_empty();
     let args = if empty {
-        vec!["worktree", "add", "--orphan", "-b", branch, &dest]
+        vec!["worktree", "add", "--orphan", "-b", branch, "--", &dest]
     } else {
-        vec!["worktree", "add", &dest, branch]
+        vec!["worktree", "add", "--", &dest, branch]
     };
     git::passthrough(&repo.common, &args)
 }

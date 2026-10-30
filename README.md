@@ -76,6 +76,10 @@ local branch while a remote branch with the same name is already present.
 Use the option `--no-fetch` to stay offline. Use the option `--fetch` to do a
 fetch first.
 
+The command refuses a name that `git check-ref-format --branch` refuses, for
+example a name with `-` first or with `:`. Git would read such a name as an
+option or as a refspec.
+
 The command also accepts the link to a pull request on GitHub:
 
 ```sh

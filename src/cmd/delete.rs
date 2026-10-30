@@ -122,7 +122,7 @@ fn remove(repo: &Repo, wt: &Worktree, force: bool) -> Result<()> {
     eprintln!("  removed    {}", wt.name());
 
     if let Some(branch) = &wt.branch {
-        match git::out(&repo.common, &["branch", "-d", branch]) {
+        match git::out(&repo.common, &["branch", "-d", "--", branch]) {
             Ok(_) => eprintln!("  deleted    branch {branch}"),
             Err(_) => eprintln!("  kept       branch {branch} (git did not merge it)"),
         }

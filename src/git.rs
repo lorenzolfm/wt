@@ -1,3 +1,7 @@
+//! Each function runs git with `args`. Git reads an argument with '-' first
+//! as an option, also after a positional argument. A name from the caller or
+//! from GitHub can start with '-', so it goes after `--`.
+
 use anyhow::{Context, Result, bail};
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::Path;
@@ -67,4 +71,14 @@ pub fn quiet(dir: &Path, args: &[&str]) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// Whether `name` is a valid branch name, by the rule of `git
+/// check-ref-format --branch`. That command also reads `@{-1}` as the
+/// previous branch, so the function checks the ref, the '-' and `HEAD`
+/// itself.
+pub fn is_branch_name(dir: &Path, name: &str) -> bool {
+    !name.starts_with('-')
+        && name != "HEAD"
+        && ok(dir, &["check-ref-format", &format!("refs/heads/{name}")])
 }

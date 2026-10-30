@@ -62,6 +62,9 @@ impl Outcome {
 /// worktree has `branch` already, the result is that worktree, so the shell
 /// goes there.
 ///
+/// The command refuses a name that is not a valid branch name, also when
+/// GitHub gives it for a pull request.
+///
 /// The progress goes to stderr. The function prints nothing on stdout.
 pub fn run(repo: &Repo, branch: &str, dir: Option<&DirName>, fetch: Fetch) -> Result<Outcome> {
     if let Some(w) = hook::check(repo) {
@@ -109,6 +112,13 @@ fn make(
     dir: Option<&DirName>,
     fetch: Fetch,
 ) -> Result<Outcome> {
+    // Git reads more than a name in these. `git fetch` reads a refspec, and
+    // `git worktree add -b` gives the name to `git branch` with no `--`.
+    for name in [&b.name, &b.upstream] {
+        if !git::is_branch_name(&repo.common, name) {
+            bail!("{name} is not a valid branch name");
+        }
+    }
     let branch = &b.name;
 
     // A local branch can track a different branch, for example master when
@@ -139,12 +149,18 @@ fn make(
 
     if fetch == Fetch::Always {
         eprintln!("  fetching   {} {}", b.remote, b.upstream);
-        git::quiet(&repo.common, &["fetch", &b.remote, &b.upstream]);
+        fetch_branch(repo, b);
     }
 
     let args: Vec<String> = if has_local(repo, branch) {
         eprintln!("  branch     {branch} (local)");
-        vec!["worktree".into(), "add".into(), dest_str, branch.into()]
+        vec![
+            "worktree".into(),
+            "add".into(),
+            "--".into(),
+            dest_str,
+            branch.into(),
+        ]
     } else if has_remote(repo, &remote_ref) {
         eprintln!("  branch     {branch} (tracks {remote_ref})");
         track_args(&dest_str, branch, &remote_ref)
@@ -152,7 +168,7 @@ fn make(
         // A branch that is not present is the usual condition here. A failed
         // fetch is therefore an expected result, and its output is not useful.
         let found_remotely = fetch != Fetch::Never && {
-            git::quiet(&repo.common, &["fetch", &b.remote, &b.upstream]);
+            fetch_branch(repo, b);
             has_remote(repo, &remote_ref)
         };
 
@@ -163,7 +179,7 @@ fn make(
             // A new branch would not have the commits of the pull request,
             // and the worktree would look correct.
             bail!(
-                "wt cannot fetch {remote_ref}\n  run git fetch {} {} to see why",
+                "wt cannot fetch {remote_ref}\n  run git fetch -- {} {} to see why",
                 b.remote,
                 b.upstream
             );
@@ -179,6 +195,7 @@ fn make(
                 "--no-track".into(),
                 "-b".into(),
                 branch.into(),
+                "--".into(),
                 dest_str,
                 base,
             ]
@@ -280,11 +297,11 @@ fn track(repo: &Repo, b: &Branch) -> Result<()> {
 
     if !has_remote(repo, &remote_ref) {
         eprintln!("  fetching   {} {}", b.remote, b.upstream);
-        git::quiet(&repo.common, &["fetch", &b.remote, &b.upstream]);
+        fetch_branch(repo, b);
     }
     git::out(
         &repo.common,
-        &["branch", "--set-upstream-to", &remote_ref, &b.name],
+        &["branch", "--set-upstream-to", &remote_ref, "--", &b.name],
     )?;
 
     let was = was
@@ -448,7 +465,7 @@ fn fork_remote(repo: &Repo, head: &Head) -> Result<String> {
 
     let origin = git::out(&repo.common, &["remote", "get-url", "origin"])?;
     let url = fork_url(&origin, head);
-    git::out(&repo.common, &["remote", "add", &head.owner, url])?;
+    git::out(&repo.common, &["remote", "add", "--", &head.owner, url])?;
     eprintln!("  remote     {} ({url})", head.owner);
     Ok(head.owner.clone())
 }
@@ -491,6 +508,16 @@ fn heads_at(listing: &str, pull_ref: &str) -> Option<Vec<String>> {
     )
 }
 
+/// Fetch the branch of `b` from its remote. A failure is a usual result:
+/// the remote can have no such branch.
+///
+/// The user gives the name of the branch, and GitHub gives the name of the
+/// branch of a fork. Both can start with '-'. Without `--`, git reads
+/// `--upload-pack=<command>` as an option and runs the command.
+fn fetch_branch(repo: &Repo, b: &Branch) {
+    git::quiet(&repo.common, &["fetch", "--", &b.remote, &b.upstream]);
+}
+
 fn track_args(dest: &str, branch: &str, remote_ref: &str) -> Vec<String> {
     vec![
         "worktree".into(),
@@ -498,6 +525,7 @@ fn track_args(dest: &str, branch: &str, remote_ref: &str) -> Vec<String> {
         "--track".into(),
         "-b".into(),
         branch.into(),
+        "--".into(),
         dest.into(),
         remote_ref.into(),
     ]
@@ -670,6 +698,30 @@ bbb\trefs/pull/7/head
         assert_eq!(real(&made), real(&tmp.path().join("feature")));
         assert_eq!(real(&found), real(&made));
         assert!(!tmp.path().join("other").exists());
+    }
+
+    /// A program that uses the library can pass a name that it did not
+    /// write. Git reads `--upload-pack=<command>` as an option, and it runs
+    /// the command when the remote is a path, as origin is here. Git reads
+    /// `<src>:<dst>` as a refspec, and it writes `<dst>`.
+    #[test]
+    fn a_name_that_is_not_a_branch_name_reaches_no_git_command() {
+        let (tmp, repo) = repo();
+        let ran = tmp.path().join("ran");
+
+        for name in [
+            format!("--upload-pack=touch {}", ran.display()),
+            "master:refs/heads/other".to_string(),
+            "HEAD".to_string(),
+        ] {
+            let error = run(&repo, &name, None, Fetch::Lazy).unwrap_err();
+            assert!(
+                error.to_string().contains("is not a valid branch name"),
+                "for {name}: {error:#}"
+            );
+        }
+        assert!(!ran.exists());
+        assert!(!has_local(&repo, "other"));
     }
 
     /// `git worktree add -b feature <path> origin/master` gives a branch that
