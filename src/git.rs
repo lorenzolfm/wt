@@ -72,3 +72,10 @@ pub fn quiet(dir: &Path, args: &[&str]) -> bool {
         .map(|s| s.success())
         .unwrap_or(false)
 }
+
+/// Whether `name` is a valid branch name, by the rule of `git
+/// check-ref-format --branch`. That command also reads `@{-1}` as the
+/// previous branch, so the function checks the ref and the '-' itself.
+pub fn is_branch_name(dir: &Path, name: &str) -> bool {
+    !name.starts_with('-') && ok(dir, &["check-ref-format", &format!("refs/heads/{name}")])
+}

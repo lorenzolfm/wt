@@ -41,6 +41,11 @@ pub fn run(url: &str, dir: Option<&str>) -> Result<()> {
 
     let default = git::out(&bare, &["symbolic-ref", "--short", "HEAD"])
         .unwrap_or_else(|_| "main".to_string());
+    // Origin chooses its HEAD, and `git worktree add -b` gives the name to
+    // `git branch` with no `--`.
+    if !git::is_branch_name(&bare, &default) {
+        bail!("the HEAD of origin is {default}, and it is not a valid branch name");
+    }
     let _ = git::out(
         &bare,
         &[

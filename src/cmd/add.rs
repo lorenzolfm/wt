@@ -62,6 +62,9 @@ impl Outcome {
 /// worktree has `branch` already, the result is that worktree, so the shell
 /// goes there.
 ///
+/// The command refuses a name that is not a valid branch name, also when
+/// GitHub gives it for a pull request.
+///
 /// The progress goes to stderr. The function prints nothing on stdout.
 pub fn run(repo: &Repo, branch: &str, dir: Option<&DirName>, fetch: Fetch) -> Result<Outcome> {
     if let Some(w) = hook::check(repo) {
@@ -109,6 +112,13 @@ fn make(
     dir: Option<&DirName>,
     fetch: Fetch,
 ) -> Result<Outcome> {
+    // Git reads more than a name in these. `git fetch` reads a refspec, and
+    // `git worktree add -b` gives the name to `git branch` with no `--`.
+    for name in [&b.name, &b.upstream] {
+        if !git::is_branch_name(&repo.common, name) {
+            bail!("{name} is not a valid branch name");
+        }
+    }
     let branch = &b.name;
 
     // A local branch can track a different branch, for example master when
@@ -690,17 +700,27 @@ bbb\trefs/pull/7/head
         assert!(!tmp.path().join("other").exists());
     }
 
-    /// Git reads `--upload-pack=<command>` as an option, and it runs the
-    /// command when the remote is a path, as origin is here. A program that
-    /// uses the library can pass a name that it did not write.
+    /// A program that uses the library can pass a name that it did not
+    /// write. Git reads `--upload-pack=<command>` as an option, and it runs
+    /// the command when the remote is a path, as origin is here. Git reads
+    /// `<src>:<dst>` as a refspec, and it writes `<dst>`.
     #[test]
-    fn a_branch_name_with_a_dash_first_runs_no_command() {
+    fn a_name_that_is_not_a_branch_name_reaches_no_git_command() {
         let (tmp, repo) = repo();
         let ran = tmp.path().join("ran");
-        let name = format!("--upload-pack=touch {}", ran.display());
 
-        assert!(run(&repo, &name, None, Fetch::Lazy).is_err());
+        for name in [
+            format!("--upload-pack=touch {}", ran.display()),
+            "master:refs/heads/other".to_string(),
+        ] {
+            let error = run(&repo, &name, None, Fetch::Lazy).unwrap_err();
+            assert!(
+                error.to_string().contains("is not a valid branch name"),
+                "for {name}: {error:#}"
+            );
+        }
         assert!(!ran.exists());
+        assert!(!has_local(&repo, "other"));
     }
 
     /// `git worktree add -b feature <path> origin/master` gives a branch that
