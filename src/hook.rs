@@ -43,9 +43,9 @@ pub fn install_target() -> Result<PathBuf> {
 /// at each checkout, and each checkout would fail. The function therefore
 /// refuses a program with a different name.
 fn exe_target(exe: PathBuf) -> Result<PathBuf> {
-    if !is_wt(&exe) {
+    if !named_wt(&exe) {
         bail!(
-            "the hook must run wt, and this program is {}\n  \
+            "the hook runs only a program with the name wt, and this program is {}\n  \
              install wt at ~/.local/bin/wt, then run `wt init`",
             exe.display()
         );
@@ -64,9 +64,13 @@ fn exe_target(exe: PathBuf) -> Result<PathBuf> {
     Ok(exe)
 }
 
-/// True when `path` is the wt program. Only wt knows the hook: it reads its
-/// own name, `post-checkout`, to find that git runs it as the hook.
-fn is_wt(path: &Path) -> bool {
+/// True when the name of `path` is wt.
+///
+/// Only wt knows the hook: it reads its own name, `post-checkout`, to find
+/// that git runs it as the hook. wt with a different name is also correct as
+/// the hook, but its name does not show that it is wt. The hook therefore
+/// points only to a program with the name wt.
+fn named_wt(path: &Path) -> bool {
     path.file_name() == Some(OsStr::new("wt"))
 }
 
@@ -111,10 +115,10 @@ pub fn check(repo: &Repo) -> Option<String> {
         ));
     }
     if let Ok(target) = fs::read_link(&hook)
-        && !is_wt(&target)
+        && !named_wt(&target)
     {
         return Some(format!(
-            "the post-checkout hook points to {}, and that program is not wt\n  wt cannot make the links automatically. run `wt init` to correct it",
+            "the post-checkout hook points to {}, and the name of that program is not wt\n  the hook must point to a program with the name wt. run `wt init` to correct it",
             target.display()
         ));
     }

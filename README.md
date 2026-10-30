@@ -299,6 +299,10 @@ ln -sf "$PWD/target/release/wt" ~/.local/bin/wt
 nix profile install github:lorenzolfm/wt
 ```
 
+Keep the name `wt`. The hook points to the program, and `wt init` refuses a
+program with a different name. `wt` also shows a warning for a hook that
+points to a program with a different name.
+
 ## Shell integration
 
 Add this line to `config.fish`:
