@@ -55,7 +55,7 @@ pub fn run(url: &str, dir: Option<&str>) -> Result<()> {
         ],
     );
 
-    let repo = Repo { common: bare };
+    let repo = Repo::at(bare);
     super::init::run(&repo)?;
 
     let dest: PathBuf = container.join(&default);
@@ -133,7 +133,7 @@ mod tests {
                 "refs/remotes/origin/main",
             ],
         );
-        (tmp, Repo { common: bare })
+        (tmp, Repo::at(bare))
     }
 
     #[test]
