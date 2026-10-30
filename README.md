@@ -58,6 +58,10 @@ give `terraform/terraform.tfvars` and not `terraform/`.
 wt add eng-1234
 ```
 
+The command makes the worktree beside `.bare`. It refuses a clone that
+`git clone` made, because there the new worktree would go inside `.git`. Use
+`wt clone` for such a repository.
+
 The hook makes the links in the new worktree. The program that makes the
 worktree is not important. `wt add`, `git worktree add`, your editor and an
 agent all start the hook.

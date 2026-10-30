@@ -187,9 +187,7 @@ mod tests {
     /// A repository whose hook points to `program`, a file that is present.
     fn hooked(program: &str) -> (TempDir, Repo) {
         let tmp = TempDir::new().unwrap();
-        let repo = Repo {
-            common: tmp.path().to_path_buf(),
-        };
+        let repo = Repo::at(tmp.path().to_path_buf());
         let target = tmp.path().join("bin").join(program);
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         fs::write(&target, "").unwrap();

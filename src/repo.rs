@@ -37,11 +37,18 @@ fn real(p: &Path) -> PathBuf {
 /// In the first layout the bare repository is the parent (`repo.git`).
 /// In the second layout the bare repository is `repo/.bare`.
 ///
+/// A clone with a work tree, as `git clone` makes it, is not one of them. Its
+/// common directory is the `.git` of the work tree, and a new worktree would
+/// go inside that directory. The tool reads such a repository, but it makes
+/// no worktree in it.
+///
 /// A program outside this crate gets a `Repo` only from `discover`. A
 /// different path, for example a worktree, would put new worktrees inside it.
 #[derive(Debug, Clone)]
 pub struct Repo {
     pub(crate) common: PathBuf,
+    /// The directory for new worktrees. A clone with a work tree has none.
+    container: Option<PathBuf>,
 }
 
 impl Repo {
@@ -60,9 +67,25 @@ impl Repo {
             &["rev-parse", "--path-format=absolute", "--git-common-dir"],
         )
         .with_context(|| format!("there is no git repository at {}", start.display()))?;
-        Ok(Repo {
-            common: PathBuf::from(common),
-        })
+        Ok(Repo::at(PathBuf::from(common)))
+    }
+
+    /// The repository whose common directory is `common`.
+    ///
+    /// The layout comes from `core.bare`. The common config holds it, so a
+    /// worktree of a bare repository also gives true. `git rev-parse
+    /// --is-bare-repository` gives false in a worktree, so it cannot tell.
+    pub(crate) fn at(common: PathBuf) -> Repo {
+        let bare = git::out(&common, &["config", "--type=bool", "--get", "core.bare"])
+            .is_ok_and(|b| b == "true");
+        let container = bare.then(|| match common.file_name() {
+            Some(n) if n == ".bare" => common
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| common.clone()),
+            _ => common.clone(),
+        });
+        Repo { common, container }
     }
 
     pub fn shared(&self) -> PathBuf {
@@ -102,21 +125,16 @@ impl Repo {
     }
 
     /// The directory for new worktrees. It is beside `.bare`, or it is the
-    /// bare repository itself in the first layout.
-    pub fn container(&self) -> PathBuf {
-        if self
-            .common
-            .file_name()
-            .map(|n| n == ".bare")
-            .unwrap_or(false)
-        {
-            self.common
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| self.common.clone())
-        } else {
-            self.common.clone()
-        }
+    /// bare repository itself in the first layout. A clone with a work tree
+    /// has none: a new worktree would go inside its `.git`.
+    pub fn container(&self) -> Result<&Path> {
+        self.container.as_deref().with_context(|| {
+            format!(
+                "{} is the .git of a clone with a work tree, and a worktree would go inside it\n  \
+                 wt makes worktrees in a bare repository. run wt clone to make one",
+                self.common.display()
+            )
+        })
     }
 
     /// Each worktree. The list does not contain the bare repository.
