@@ -145,8 +145,8 @@ sufficient when only one worktree matches.
 A command wins over a worktree with the same name, and a short form such as
 `wt d` is a command. `wt ls` therefore prints the worktrees, also when a
 worktree has the name `ls`. The long form `wt cd ls` goes to that worktree,
-and `wt add` prints a warning when it makes a directory with the name of a
-command.
+and `wt add` prints a warning when the worktree that it makes or finds has the
+name of a command.
 
 ### See the worktrees
 
