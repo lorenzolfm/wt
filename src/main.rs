@@ -24,7 +24,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Make the store, the config entry and the hook
+    /// Make the store and the hook
     Init,
 
     /// Move ignored paths into the store and make the links

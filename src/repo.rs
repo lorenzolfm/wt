@@ -88,11 +88,10 @@ impl Repo {
         Ok(RepoKey::from_url(&url))
     }
 
-    /// Whether the global config has an entry for this repository. An error
-    /// means that wt cannot tell: origin is absent, or wt cannot read the
-    /// config.
-    pub fn is_managed(&self) -> Result<bool> {
-        Ok(Config::load()?.repo(&self.key()?).is_some())
+    /// Whether `wt init` made the store of this repository. The config does
+    /// not tell: a repository with no shared path has no entry in it.
+    pub fn is_managed(&self) -> bool {
+        self.shared().is_dir()
     }
 
     /// The shared paths for this repository, from the global config.
@@ -205,7 +204,7 @@ impl Repo {
     }
 
     pub fn require_managed(&self) -> Result<()> {
-        if !self.is_managed()? {
+        if !self.is_managed() {
             bail!(
                 "wt does not control {}\n  run `wt init` first",
                 self.common.display()
