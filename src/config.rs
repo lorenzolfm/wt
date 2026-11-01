@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -285,18 +286,20 @@ impl Config {
         if old.as_ref().is_some_and(|md| md.nlink() > 1) {
             return in_place();
         }
-        // The process id gives each wt that writes a different name.
+        // The process id gives each wt that writes a different name. Two
+        // processes in two PID namespaces, or on two hosts of one home
+        // directory, can have the same pid. The second one then finds the
+        // file present, and it stops: it does not write into the file or
+        // remove it.
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let tmp = path.with_file_name(format!(".{name}.{}", std::process::id()));
-        let written = std::fs::write(&tmp, &body)
-            .and_then(|()| match &old {
-                Some(md) => std::fs::set_permissions(&tmp, md.permissions()),
-                None => Ok(()),
-            })
-            .and_then(|()| std::fs::rename(&tmp, &path));
+        let tmp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+        let file = std::fs::File::create_new(&tmp)
+            .with_context(|| format!("wt cannot write {}", tmp.display()))?;
+        let written =
+            write_new(file, old.as_ref(), &body).and_then(|()| std::fs::rename(&tmp, &path));
         match written {
             Ok(()) => Ok(()),
             Err(e) => {
@@ -316,6 +319,19 @@ impl Config {
     pub fn repo_mut(&mut self, key: &RepoKey) -> &mut RepoConfig {
         self.repos.entry(key.clone()).or_default()
     }
+}
+
+/// Write `body` into the new file `file`, with the mode of the old file.
+fn write_new(
+    mut file: std::fs::File,
+    old: Option<&std::fs::Metadata>,
+    body: &str,
+) -> std::io::Result<()> {
+    file.write_all(body.as_bytes())?;
+    if let Some(old) = old {
+        file.set_permissions(old.permissions())?;
+    }
+    Ok(())
 }
 
 /// The file at the end of the links from `path`.
@@ -674,6 +690,25 @@ mod tests {
         one_path().write_to(&path).unwrap();
 
         assert!(std::fs::read_to_string(&dotfiles).unwrap().contains(".env"));
+    }
+
+    /// A wt with the same pid, in a different PID namespace or on a
+    /// different host of one home directory, writes the temporary file.
+    #[test]
+    fn the_temporary_file_of_another_process_stays_as_it_is() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "old").unwrap();
+        let other = tmp
+            .path()
+            .join(format!(".config.toml.{}.tmp", std::process::id()));
+        std::fs::write(&other, "other").unwrap();
+
+        let error = one_path().write_to(&path).unwrap_err().to_string();
+
+        assert!(error.contains("wt cannot write"), "{error}");
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "other");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
     }
 
     /// Each path that `wt share` gets can fail, and the entry then has no
