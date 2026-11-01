@@ -1,4 +1,4 @@
-use crate::config::SharedPath;
+use crate::config::SharedPaths;
 use crate::repo::Repo;
 use crate::seed::{self, Outcome};
 use anyhow::{Context, Result, bail};
@@ -160,7 +160,7 @@ fn seed_here() -> Result<()> {
     report(&repo.shared(), &cwd, &manifest.link)
 }
 
-fn report(shared: &Path, worktree: &Path, entries: &[SharedPath]) -> Result<()> {
+fn report(shared: &Path, worktree: &Path, entries: &SharedPaths) -> Result<()> {
     let mut linked = 0usize;
     for entry in entries {
         match seed::seed_entry(shared, worktree, entry, false)? {

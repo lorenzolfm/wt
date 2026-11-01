@@ -38,8 +38,16 @@ fn share_one(
     let source = toplevel.join(&entry);
     let stored = repo.shared().join(&entry);
 
-    if manifest.contains(&entry) {
-        bail!("the config file contains this path");
+    // Before wt moves anything: the list refuses a path inside a different
+    // one.
+    if let Some(other) = manifest.link.overlap(&entry) {
+        if *other == entry {
+            bail!("the config file contains this path");
+        }
+        bail!(
+            "the config file contains {other}, and one of the two paths is inside the other\n  \
+             remove {other} from the config first"
+        );
     }
 
     // Git supplies each tracked path. A link over a tracked path hides the
@@ -68,7 +76,10 @@ fn share_one(
             && fs::read_link(&source).ok().as_deref() == Some(stored.as_path());
 
         if link_is_correct || !source.exists() {
-            manifest.insert(&entry);
+            manifest
+                .link
+                .insert(entry.clone())
+                .map_err(anyhow::Error::msg)?;
             eprintln!("  recorded   {entry}  (the store already has it)");
             backfill(repo, &entry, force)?;
             return Ok(());
@@ -98,7 +109,10 @@ fn share_one(
         entry
     );
 
-    manifest.insert(&entry);
+    manifest
+        .link
+        .insert(entry.clone())
+        .map_err(anyhow::Error::msg)?;
     backfill(repo, &entry, force)?;
     Ok(())
 }

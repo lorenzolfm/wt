@@ -60,7 +60,7 @@ pub fn shareable(repo: &Repo) -> Result<()> {
     for line in text.lines() {
         // Git gives a directory with `/` at the end. The shared path has none.
         if let Ok(path) = SharedPath::try_from(line.to_string())
-            && !already.contains(&path)
+            && already.link.overlap(&path).is_none()
         {
             println!("{path}");
         }

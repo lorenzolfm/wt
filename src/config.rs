@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -13,19 +13,88 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct RepoConfig {
     #[serde(default)]
-    pub link: Vec<SharedPath>,
+    pub link: SharedPaths,
 }
 
-impl RepoConfig {
-    pub fn contains(&self, entry: &SharedPath) -> bool {
-        self.link.contains(entry)
+/// The shared paths of one repository, each one time, in order. No path is
+/// inside a different one.
+///
+/// With a link at `.auth`, the path `.auth/token` is the file in the store,
+/// and wt changes nothing below a link. A list with both paths is therefore
+/// never correct. The same path two times loses nothing, so the list keeps
+/// it one time, as `.auth/` is `.auth`.
+///
+/// `try_from` and `insert` are the only ways to add a path, so each list has
+/// this form.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(try_from = "Vec<SharedPath>", into = "Vec<SharedPath>")]
+pub struct SharedPaths(BTreeSet<SharedPath>);
+
+impl SharedPaths {
+    /// The path in the list that is `entry`, holds it, or is inside it.
+    pub fn overlap(&self, entry: &SharedPath) -> Option<&SharedPath> {
+        self.0.iter().find(|p| p.holds(entry) || entry.holds(p))
     }
 
-    pub fn insert(&mut self, entry: &SharedPath) {
-        if !self.contains(entry) {
-            self.link.push(entry.clone());
-            self.link.sort();
+    pub fn insert(&mut self, entry: SharedPath) -> Result<(), String> {
+        match self.overlap(&entry) {
+            None => {
+                self.0.insert(entry);
+                Ok(())
+            }
+            Some(same) if *same == entry => Ok(()),
+            Some(other) => {
+                let (outer, inner) = if other.holds(&entry) {
+                    (other, &entry)
+                } else {
+                    (&entry, other)
+                };
+                Err(format!(
+                    "{:?} is inside {:?}. keep one of them",
+                    inner.as_str(),
+                    outer.as_str()
+                ))
+            }
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &SharedPath> {
+        self.0.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a SharedPaths {
+    type Item = &'a SharedPath;
+    type IntoIter = std::collections::btree_set::Iter<'a, SharedPath>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl TryFrom<Vec<SharedPath>> for SharedPaths {
+    type Error = String;
+
+    fn try_from(paths: Vec<SharedPath>) -> Result<Self, Self::Error> {
+        let mut list = SharedPaths::default();
+        for p in paths {
+            list.insert(p)?;
+        }
+        Ok(list)
+    }
+}
+
+impl From<SharedPaths> for Vec<SharedPath> {
+    fn from(list: SharedPaths) -> Vec<SharedPath> {
+        list.0.into_iter().collect()
     }
 }
 
@@ -56,6 +125,16 @@ pub struct SharedPath(String);
 impl SharedPath {
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// True when `other` is this path or a path below it. The names decide:
+    /// `.auth` holds `.auth/token` and not `.auth-old`.
+    pub fn holds(&self, other: &SharedPath) -> bool {
+        other.0 == self.0
+            || other
+                .0
+                .strip_prefix(&self.0)
+                .is_some_and(|rest| rest.starts_with('/'))
     }
 }
 
@@ -288,6 +367,10 @@ mod tests {
         SharedPath::try_from(raw.to_string()).unwrap()
     }
 
+    fn names(link: &SharedPaths) -> Vec<&str> {
+        link.iter().map(SharedPath::as_str).collect()
+    }
+
     #[test]
     fn each_url_form_gives_the_same_key() {
         for url in [
@@ -376,10 +459,54 @@ mod tests {
             .repo(&RepoKey::from_url("github.com/owner/repo"))
             .unwrap()
             .link;
-        assert_eq!(
-            link.iter().map(SharedPath::as_str).collect::<Vec<_>>(),
-            [".auth", "terraform/vars.tfvars"]
-        );
+        assert_eq!(names(link), [".auth", "terraform/vars.tfvars"]);
+    }
+
+    /// A link at `.auth` makes `.auth/token` the file in the store, so the
+    /// two paths are never correct together. The order does not matter.
+    #[test]
+    fn a_config_with_a_path_inside_a_different_one_is_refused() {
+        for link in [r#"[".auth", ".auth/token"]"#, r#"[".auth/token", ".auth"]"#] {
+            let text = format!("[repos.\"github.com/owner/repo\"]\nlink = {link}\n");
+
+            let error = toml::from_str::<Config>(&text).unwrap_err().to_string();
+
+            assert!(
+                error.contains(r#"".auth/token" is inside ".auth". keep one of them"#),
+                "{error}"
+            );
+        }
+    }
+
+    /// The names decide, and not the text: `.auth-old` is not inside
+    /// `.auth`.
+    #[test]
+    fn a_path_whose_text_starts_with_a_different_path_is_not_inside_it() {
+        let text = "[repos.\"github.com/owner/repo\"]\nlink = [\".auth\", \".auth-old\"]\n";
+
+        let config: Config = toml::from_str(text).unwrap();
+
+        let link = &config
+            .repo(&RepoKey::from_url("github.com/owner/repo"))
+            .unwrap()
+            .link;
+        assert_eq!(names(link), [".auth", ".auth-old"]);
+    }
+
+    /// The same path two times loses nothing, so the list keeps it one
+    /// time.
+    #[test]
+    fn a_path_two_times_is_one_path() {
+        let text = "[repos.\"github.com/owner/repo\"]\n\
+                    link = [\".env\", \".auth/\", \".env\", \".auth\"]\n";
+
+        let config: Config = toml::from_str(text).unwrap();
+
+        let link = &config
+            .repo(&RepoKey::from_url("github.com/owner/repo"))
+            .unwrap()
+            .link;
+        assert_eq!(names(link), [".auth", ".env"]);
     }
 
     /// An older `wt init` wrote an entry with no path for each repository.
@@ -393,11 +520,14 @@ mod tests {
         let config: Config = toml::from_str(text).unwrap();
 
         assert_eq!(config.repos.len(), 1);
-        assert!(
-            config
-                .repo(&RepoKey::from_url("github.com/owner/floresta"))
-                .unwrap()
-                .contains(&path(".env"))
+        assert_eq!(
+            names(
+                &config
+                    .repo(&RepoKey::from_url("github.com/owner/floresta"))
+                    .unwrap()
+                    .link
+            ),
+            [".env"]
         );
         assert!(
             config
@@ -428,8 +558,8 @@ mod tests {
             toml::from_str("[repos.\"github.com/owner/Floresta\"]\nlink = [\".env\"]\n").unwrap();
         let key = RepoKey::from_url("git@github.com:owner/floresta.git");
 
-        assert!(config.repo(&key).unwrap().contains(&path(".env")));
-        config.repo_mut(&key).insert(&path("data"));
+        assert_eq!(names(&config.repo(&key).unwrap().link), [".env"]);
+        config.repo_mut(&key).link.insert(path("data")).unwrap();
         let text = toml::to_string(&config).unwrap();
 
         assert_eq!(config.repos.len(), 1);

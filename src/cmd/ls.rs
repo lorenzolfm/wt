@@ -1,4 +1,4 @@
-use crate::config::SharedPath;
+use crate::config::SharedPaths;
 use crate::hook;
 use crate::repo::Repo;
 use crate::seed::{State, inspect};
@@ -55,7 +55,7 @@ pub fn run(repo: &Repo) -> Result<()> {
 /// Count the links that are correct, and name the paths that are not.
 ///
 /// This function only reports. `inspect` changes nothing.
-fn links(shared: &std::path::Path, wt: &crate::repo::Worktree, entries: &[SharedPath]) -> String {
+fn links(shared: &std::path::Path, wt: &crate::repo::Worktree, entries: &SharedPaths) -> String {
     let mut good = 0usize;
     let mut problems = Vec::new();
 
