@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Write;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, fchown};
 use std::path::{Path, PathBuf};
 
 /// The list of shared paths for one repository.
@@ -259,7 +259,8 @@ impl Config {
 
     /// Write the file at `path` in one step. A reader, for example the hook
     /// in a different terminal, then reads the old file or the new file, and
-    /// never a part of one. The new file gets the mode of the old file.
+    /// never a part of one. The new file gets the owner, the group and the
+    /// mode of the old file.
     ///
     /// The file can be a link into the dotfiles. A rename over the link
     /// would put a plain file in its place, so the function writes the
@@ -321,16 +322,33 @@ impl Config {
     }
 }
 
-/// Write `body` into the new file `file`, with the mode of the old file.
+/// Write `body` into the new file `file`, with the owner, the group and the
+/// mode of the old file.
 fn write_new(
     mut file: std::fs::File,
     old: Option<&std::fs::Metadata>,
     body: &str,
 ) -> std::io::Result<()> {
-    file.write_all(body.as_bytes())?;
+    // The owner and the mode come before the body. Else each user can read
+    // the body of a config with mode 600 until the mode changes.
     if let Some(old) = old {
+        // Keep the owner of the old file, as a write into it does. The
+        // rename puts a new file in its place, and the writer owns that
+        // file: after `sudo wt share`, root would own the config. Root can
+        // give the file back. A user can give it only to a group of that
+        // user, and else the file stays the writer's.
+        let new = file.metadata()?;
+        if (old.uid(), old.gid()) != (new.uid(), new.gid()) {
+            match fchown(&file, Some(old.uid()), Some(old.gid())) {
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {}
+                other => other?,
+            }
+        }
+        // Keep the mode of the old file too. The owner comes first, because
+        // a change of the owner can clear bits of the mode.
         file.set_permissions(old.permissions())?;
     }
+    file.write_all(body.as_bytes())?;
     // The body must be on the disk before the rename. Else a crash of the
     // system can leave an empty file in the place of the config.
     file.sync_all()
