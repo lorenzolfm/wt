@@ -294,6 +294,13 @@ The case of the key does not matter, because GitHub ignores it. A clone of
 keys that differ only in case. They are the same repository, so merge their
 lists into one entry. An entry with an empty list is not part of this rule.
 
+Each path starts at the top of the worktree, for example `.env` or
+`terraform/terraform.tfvars`. `wt` refuses a file with a path that is empty or
+absolute, or that has the name `.` or `..` in it, for example `../.env`. `wt`
+replaces the file at a shared path with a link, and such a path can give the
+worktree itself or a file outside it. A `/` at the end is not part of the
+path, so `.auth/` is `.auth`.
+
 `wt` reads `$XDG_CONFIG_HOME/wt/config.toml` when that variable is set.
 
 The file holds no secret. It holds only path names. The content stays in the
