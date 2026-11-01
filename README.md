@@ -31,8 +31,7 @@ project/
 
 ### Start with a repository that is already on your disk
 
-Go into a worktree of the repository. Make the store, the config entry and
-the hook:
+Go into a worktree of the repository. Make the store and the hook:
 
 ```sh
 wt init
@@ -253,7 +252,7 @@ Use the option `--force` to replace a file that is different.
 
 | Command | Short | Function |
 |---|---|---|
-| `wt init` | | Make the store, the config entry and the hook. Move no files. |
+| `wt init` | | Make the store and the hook. Move no files. |
 | `wt share <path>…` | `wt sh` | Move ignored paths into the store. Link them in each worktree. |
 | `wt add <branch> [dir]` | `wt a` | Make a worktree for a branch or for the link to a pull request. |
 | `wt cd <worktree>` | `wt c` | Print the path of a worktree. The shell integration then changes directory. |
@@ -284,10 +283,16 @@ The key is the remote URL in a normal form. Each form of the URL gives the
 same key, so one file is correct for SSH and for HTTPS, and on each machine.
 Put this file in your dotfiles to keep the list.
 
+A repository has an entry only when it has a shared path. `wt share` adds the
+entry with the first path, and `wt init` writes nothing to the file.
+`wt add`, `wt cd`, `wt delete` and `wt prune` do not read the file, so they
+work the same with no entry. `wt` ignores an entry with an empty list, as an older `wt init` wrote
+it, and it removes such an entry the next time that it writes the file.
+
 The case of the key does not matter, because GitHub ignores it. A clone of
 `you/Project` uses the entry for `you/project`. `wt` refuses a file with two
 keys that differ only in case. They are the same repository, so merge their
-lists into one entry.
+lists into one entry. An entry with an empty list is not part of this rule.
 
 `wt` reads `$XDG_CONFIG_HOME/wt/config.toml` when that variable is set.
 
