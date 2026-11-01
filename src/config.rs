@@ -1,8 +1,9 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 /// The list of shared paths for one repository.
@@ -257,30 +258,55 @@ impl Config {
 
     /// Write the file at `path` in one step. A reader, for example the hook
     /// in a different terminal, then reads the old file or the new file, and
-    /// never a part of one.
+    /// never a part of one. The new file gets the mode of the old file.
     ///
     /// The file can be a link into the dotfiles. A rename over the link
     /// would put a plain file in its place, so the function writes the
     /// target of the link.
+    ///
+    /// In two cases the function writes the old file itself, and a reader
+    /// can read a part of it:
+    /// - The file has a second name, a hard link. A rename would give the
+    ///   new text to one name only.
+    /// - The file is a mount point, for example in a container. The system
+    ///   refuses the rename.
     fn write_to(&self, path: &Path) -> Result<()> {
-        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let path = link_target(path)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("wt cannot make the directory {}", parent.display()))?;
         }
         let body = toml::to_string_pretty(self)?;
+        let in_place = || {
+            std::fs::write(&path, &body)
+                .with_context(|| format!("wt cannot write {}", path.display()))
+        };
+        let old = std::fs::metadata(&path).ok();
+        if old.as_ref().is_some_and(|md| md.nlink() > 1) {
+            return in_place();
+        }
         // The process id gives each wt that writes a different name.
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let tmp = path.with_file_name(format!(".{name}.{}", std::process::id()));
-        std::fs::write(&tmp, body).with_context(|| format!("wt cannot write {}", tmp.display()))?;
-        if let Err(e) = std::fs::rename(&tmp, &path) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e).with_context(|| format!("wt cannot write {}", path.display()));
+        let written = std::fs::write(&tmp, &body)
+            .and_then(|()| match &old {
+                Some(md) => std::fs::set_permissions(&tmp, md.permissions()),
+                None => Ok(()),
+            })
+            .and_then(|()| std::fs::rename(&tmp, &path));
+        match written {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                if e.kind() == std::io::ErrorKind::ResourceBusy {
+                    return in_place();
+                }
+                Err(e).with_context(|| format!("wt cannot write {}", path.display()))
+            }
         }
-        Ok(())
     }
 
     pub fn repo(&self, key: &RepoKey) -> Option<&RepoConfig> {
@@ -290,6 +316,31 @@ impl Config {
     pub fn repo_mut(&mut self, key: &RepoKey) -> &mut RepoConfig {
         self.repos.entry(key.clone()).or_default()
     }
+}
+
+/// The file at the end of the links from `path`.
+///
+/// The file does not need to exist: a link into the dotfiles can point to a
+/// file that the dotfiles do not have yet. `canonicalize` fails on such a
+/// link.
+fn link_target(path: &Path) -> Result<PathBuf> {
+    let mut path = path.to_path_buf();
+    // The system also follows at most 40 links.
+    for _ in 0..40 {
+        match std::fs::symlink_metadata(&path) {
+            Ok(md) if md.file_type().is_symlink() => {
+                let next = std::fs::read_link(&path)
+                    .with_context(|| format!("wt cannot read the link {}", path.display()))?;
+                // A relative target starts at the directory of the link.
+                path = match path.parent() {
+                    Some(dir) => dir.join(next),
+                    None => next,
+                };
+            }
+            _ => return Ok(path),
+        }
+    }
+    bail!("{} is a loop of links", path.display())
 }
 
 /// A repository: the host and the path of its remote URL, in a normal form.
@@ -558,34 +609,71 @@ mod tests {
         );
     }
 
-    /// The config can be a link into the dotfiles. The file stays a link,
-    /// its target gets the new text, and no temporary file stays.
+    fn one_path() -> Config {
+        toml::from_str("[repos.\"github.com/owner/repo\"]\nlink = [\".env\"]\n").unwrap()
+    }
+
+    /// The config can be a link into the dotfiles, also before the dotfiles
+    /// have the file. The file stays a link, its target gets the new text,
+    /// and no temporary file stays.
     #[test]
     fn a_config_that_is_a_link_stays_a_link() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let dotfiles = tmp.path().join("dotfiles").join("wt.toml");
-        std::fs::create_dir_all(dotfiles.parent().unwrap()).unwrap();
-        std::fs::write(&dotfiles, "").unwrap();
-        let path = tmp.path().join("wt").join("config.toml");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::os::unix::fs::symlink(&dotfiles, &path).unwrap();
-        let config: Config =
-            toml::from_str("[repos.\"github.com/owner/repo\"]\nlink = [\".env\"]\n").unwrap();
+        for target_is_present in [true, false] {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let dotfiles = tmp.path().join("dotfiles").join("wt.toml");
+            std::fs::create_dir_all(dotfiles.parent().unwrap()).unwrap();
+            if target_is_present {
+                std::fs::write(&dotfiles, "").unwrap();
+            }
+            let path = tmp.path().join("wt").join("config.toml");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink("../dotfiles/wt.toml", &path).unwrap();
 
-        config.write_to(&path).unwrap();
+            one_path().write_to(&path).unwrap();
 
-        assert!(
-            std::fs::symlink_metadata(&path)
+            assert!(
+                std::fs::symlink_metadata(&path)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert!(std::fs::read_to_string(&dotfiles).unwrap().contains(".env"));
+            let names: Vec<_> = std::fs::read_dir(dotfiles.parent().unwrap())
                 .unwrap()
-                .file_type()
-                .is_symlink()
-        );
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            assert_eq!(names, ["wt.toml"]);
+        }
+    }
+
+    /// A person can keep the config private with `chmod 600`.
+    #[test]
+    fn a_save_keeps_the_mode_of_the_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        one_path().write_to(&path).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    /// The config can be a hard link into the dotfiles. Each name of the
+    /// file gets the new text.
+    #[test]
+    fn a_config_that_is_a_hard_link_stays_one_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dotfiles = tmp.path().join("wt.toml");
+        std::fs::write(&dotfiles, "").unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::hard_link(&dotfiles, &path).unwrap();
+
+        one_path().write_to(&path).unwrap();
+
         assert!(std::fs::read_to_string(&dotfiles).unwrap().contains(".env"));
-        let names: Vec<_> = std::fs::read_dir(dotfiles.parent().unwrap())
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .collect();
-        assert_eq!(names, ["wt.toml"]);
     }
 
     /// Each path that `wt share` gets can fail, and the entry then has no
