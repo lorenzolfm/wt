@@ -354,15 +354,19 @@ fn write_new(
     file.sync_all()
 }
 
-/// The file at the end of the links from `path`.
+/// Linux follows at most 40 links in a path.
+const MAX_LINKS: usize = 40;
+
+/// The file at the end of the links from `link`.
 ///
 /// The file does not need to exist: a link into the dotfiles can point to a
 /// file that the dotfiles do not have yet. `canonicalize` fails on such a
 /// link.
-fn link_target(path: &Path) -> Result<PathBuf> {
-    let mut path = path.to_path_buf();
-    // The system also follows at most 40 links.
-    for _ in 0..40 {
+fn link_target(link: &Path) -> Result<PathBuf> {
+    let mut path = link.to_path_buf();
+    // The loop also looks at the end of the 40th link, so it follows 40
+    // links, as the system does, and it refuses the 41st.
+    for _ in 0..=MAX_LINKS {
         match std::fs::symlink_metadata(&path) {
             Ok(md) if md.file_type().is_symlink() => {
                 let next = std::fs::read_link(&path)
@@ -376,7 +380,10 @@ fn link_target(path: &Path) -> Result<PathBuf> {
             _ => return Ok(path),
         }
     }
-    bail!("{} is a loop of links", path.display())
+    bail!(
+        "{} is a chain of more than {MAX_LINKS} links",
+        link.display()
+    )
 }
 
 /// A repository: the host and the path of its remote URL, in a normal form.
@@ -710,6 +717,44 @@ mod tests {
         one_path().write_to(&path).unwrap();
 
         assert!(std::fs::read_to_string(&dotfiles).unwrap().contains(".env"));
+    }
+
+    /// `count` links in a row in `dir`, and the last one points to
+    /// `config.toml`. Gives the first link.
+    fn chain_of_links(dir: &Path, count: usize) -> PathBuf {
+        for i in 0..count {
+            let target = if i + 1 == count {
+                "config.toml".to_string()
+            } else {
+                format!("link{}", i + 1)
+            };
+            std::os::unix::fs::symlink(target, dir.join(format!("link{i}"))).unwrap();
+        }
+        dir.join("link0")
+    }
+
+    #[test]
+    fn a_chain_of_40_links_is_followed_as_linux_does() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let first = chain_of_links(tmp.path(), MAX_LINKS);
+
+        one_path().write_to(&first).unwrap();
+
+        // macOS follows at most 32 links, so read the file at the end of the
+        // chain and not the chain.
+        let file = tmp.path().join("config.toml");
+        assert!(std::fs::read_to_string(file).unwrap().contains(".env"));
+    }
+
+    #[test]
+    fn a_chain_of_41_links_is_refused() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let first = chain_of_links(tmp.path(), MAX_LINKS + 1);
+
+        let error = one_path().write_to(&first).unwrap_err().to_string();
+
+        assert!(error.contains("more than 40 links"), "{error}");
+        assert!(!tmp.path().join("config.toml").exists());
     }
 
     /// A wt with the same pid, in a different PID namespace or on a
