@@ -47,7 +47,7 @@ end
 complete -c wt -f
 # Each command that has a short form gives both, so `wt d<TAB>` and
 # `wt de<TAB>` both reach delete.
-complete -c wt -n __fish_use_subcommand -a init       -d 'make the store, the config entry and the hook'
+complete -c wt -n __fish_use_subcommand -a init       -d 'make the store and the hook'
 complete -c wt -n __fish_use_subcommand -a 'share sh' -d 'move ignored paths into the store and make the links'
 complete -c wt -n __fish_use_subcommand -a 'add a'    -d 'make a worktree for a branch'
 complete -c wt -n __fish_use_subcommand -a 'delete d' -d 'remove each worktree and delete its branch'

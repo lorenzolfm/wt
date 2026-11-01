@@ -36,22 +36,33 @@ impl RepoConfig {
 /// to keep the list of shared paths. The case of a key does not matter, so
 /// the file has one entry for each repository.
 ///
+/// A repository has an entry only when it has a shared path. An entry with
+/// no path is the same as no entry, so the file does not keep it.
+///
 /// The file holds no secret. The store holds the content, and the store stays
 /// in the repository.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {
-    #[serde(default, deserialize_with = "one_entry_for_each_repo")]
+    #[serde(
+        default,
+        deserialize_with = "one_entry_for_each_repo",
+        serialize_with = "each_entry_with_a_path"
+    )]
     pub repos: BTreeMap<RepoKey, RepoConfig>,
 }
 
 /// The entries of the file. Two keys in a different case are one repository,
-/// and the map would keep the list of the second one only.
+/// and the map would keep the list of the second one only. An entry with no
+/// path loses nothing, so the function ignores it.
 fn one_entry_for_each_repo<'de, D>(d: D) -> Result<BTreeMap<RepoKey, RepoConfig>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let mut repos = BTreeMap::new();
     for (key, cfg) in BTreeMap::<String, RepoConfig>::deserialize(d)? {
+        if cfg.link.is_empty() {
+            continue;
+        }
         let key = RepoKey::from_url(&key);
         if let Some((was, _)) = repos.get_key_value(&key) {
             return Err(serde::de::Error::custom(format!(
@@ -61,6 +72,15 @@ where
         repos.insert(key, cfg);
     }
     Ok(repos)
+}
+
+/// `wt share` makes the entry before it shares a path, and each path can
+/// fail. The file then keeps no entry for that repository.
+fn each_entry_with_a_path<S>(repos: &BTreeMap<RepoKey, RepoConfig>, s: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    s.collect_map(repos.iter().filter(|(_, cfg)| !cfg.link.is_empty()))
 }
 
 impl Config {
@@ -238,7 +258,7 @@ mod tests {
     #[test]
     fn a_config_with_one_repository_in_two_cases_is_refused() {
         let text = "[repos.\"github.com/owner/Floresta\"]\nlink = [\".env\"]\n\n\
-                    [repos.\"github.com/owner/floresta\"]\nlink = []\n";
+                    [repos.\"github.com/owner/floresta\"]\nlink = [\"data\"]\n";
 
         let error = toml::from_str::<Config>(text).unwrap_err().to_string();
 
@@ -246,6 +266,44 @@ mod tests {
             error.contains("github.com/owner/Floresta and github.com/owner/floresta are the same"),
             "{error}"
         );
+    }
+
+    /// An older `wt init` wrote an entry with no path for each repository.
+    /// Such an entry is the same as no entry, also in a different case.
+    #[test]
+    fn an_entry_with_no_path_is_the_same_as_no_entry() {
+        let text = "[repos.\"github.com/owner/Floresta\"]\nlink = []\n\n\
+                    [repos.\"github.com/owner/floresta\"]\nlink = [\".env\"]\n\n\
+                    [repos.\"github.com/owner/wt\"]\nlink = []\n";
+
+        let config: Config = toml::from_str(text).unwrap();
+
+        assert_eq!(config.repos.len(), 1);
+        assert!(
+            config
+                .repo(&RepoKey::from_url("github.com/owner/floresta"))
+                .unwrap()
+                .contains(".env")
+        );
+        assert!(
+            config
+                .repo(&RepoKey::from_url("github.com/owner/wt"))
+                .is_none()
+        );
+    }
+
+    /// Each path that `wt share` gets can fail, and the entry then has no
+    /// path.
+    #[test]
+    fn the_file_keeps_no_entry_with_no_path() {
+        let mut config: Config =
+            toml::from_str("[repos.\"github.com/owner/one\"]\nlink = [\".env\"]\n").unwrap();
+        config.repo_mut(&RepoKey::from_url("github.com/owner/two"));
+
+        let text = toml::to_string(&config).unwrap();
+
+        assert!(text.contains("github.com/owner/one"), "{text}");
+        assert!(!text.contains("github.com/owner/two"), "{text}");
     }
 
     /// `wt init` and `wt share` on a clone whose origin has a different case

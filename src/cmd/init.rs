@@ -1,10 +1,12 @@
-use crate::config::Config;
 use crate::hook;
 use crate::repo::Repo;
 use anyhow::Result;
 use std::fs;
 
-/// Make the store, the config entry and the hook. This command moves no files.
+/// Make the store and the hook. This command moves no files.
+///
+/// The command writes nothing to the config. `wt share` adds the entry with
+/// the first path.
 pub fn run(repo: &Repo) -> Result<()> {
     let mut changed = false;
 
@@ -12,15 +14,6 @@ pub fn run(repo: &Repo) -> Result<()> {
     if !shared.exists() {
         fs::create_dir_all(&shared)?;
         eprintln!("  created    shared/");
-        changed = true;
-    }
-
-    let key = repo.key()?;
-    let mut config = Config::load()?;
-    if config.repo(&key).is_none() {
-        config.repo_mut(&key);
-        config.save()?;
-        eprintln!("  added      {key}  to {}", Config::path()?.display());
         changed = true;
     }
 
