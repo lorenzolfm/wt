@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::os::unix::fs::MetadataExt;
+use std::io::Write;
+use std::os::unix::fs::{MetadataExt, fchown};
 use std::path::{Path, PathBuf};
 
 /// The list of shared paths for one repository.
@@ -258,7 +259,8 @@ impl Config {
 
     /// Write the file at `path` in one step. A reader, for example the hook
     /// in a different terminal, then reads the old file or the new file, and
-    /// never a part of one. The new file gets the mode of the old file.
+    /// never a part of one. The new file gets the owner, the group and the
+    /// mode of the old file.
     ///
     /// The file can be a link into the dotfiles. A rename over the link
     /// would put a plain file in its place, so the function writes the
@@ -285,18 +287,20 @@ impl Config {
         if old.as_ref().is_some_and(|md| md.nlink() > 1) {
             return in_place();
         }
-        // The process id gives each wt that writes a different name.
+        // The process id gives each wt that writes a different name. Two
+        // processes in two PID namespaces, or on two hosts of one home
+        // directory, can have the same pid. The second one then finds the
+        // file present, and it stops: it does not write into the file or
+        // remove it.
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let tmp = path.with_file_name(format!(".{name}.{}", std::process::id()));
-        let written = std::fs::write(&tmp, &body)
-            .and_then(|()| match &old {
-                Some(md) => std::fs::set_permissions(&tmp, md.permissions()),
-                None => Ok(()),
-            })
-            .and_then(|()| std::fs::rename(&tmp, &path));
+        let tmp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+        let file = std::fs::File::create_new(&tmp)
+            .with_context(|| format!("wt cannot write {}", tmp.display()))?;
+        let written =
+            write_new(file, old.as_ref(), &body).and_then(|()| std::fs::rename(&tmp, &path));
         match written {
             Ok(()) => Ok(()),
             Err(e) => {
@@ -318,15 +322,51 @@ impl Config {
     }
 }
 
-/// The file at the end of the links from `path`.
+/// Write `body` into the new file `file`, with the owner, the group and the
+/// mode of the old file.
+fn write_new(
+    mut file: std::fs::File,
+    old: Option<&std::fs::Metadata>,
+    body: &str,
+) -> std::io::Result<()> {
+    // The owner and the mode come before the body. Else each user can read
+    // the body of a config with mode 600 until the mode changes.
+    if let Some(old) = old {
+        // Keep the owner of the old file, as a write into it does. The
+        // rename puts a new file in its place, and the writer owns that
+        // file: after `sudo wt share`, root would own the config. Root can
+        // give the file back. A user can give it only to a group of that
+        // user, and else the file stays the writer's.
+        let new = file.metadata()?;
+        if (old.uid(), old.gid()) != (new.uid(), new.gid()) {
+            match fchown(&file, Some(old.uid()), Some(old.gid())) {
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {}
+                other => other?,
+            }
+        }
+        // Keep the mode of the old file too. The owner comes first, because
+        // a change of the owner can clear bits of the mode.
+        file.set_permissions(old.permissions())?;
+    }
+    file.write_all(body.as_bytes())?;
+    // The body must be on the disk before the rename. Else a crash of the
+    // system can leave an empty file in the place of the config.
+    file.sync_all()
+}
+
+/// Linux follows at most 40 links in a path.
+const MAX_LINKS: usize = 40;
+
+/// The file at the end of the links from `link`.
 ///
 /// The file does not need to exist: a link into the dotfiles can point to a
 /// file that the dotfiles do not have yet. `canonicalize` fails on such a
 /// link.
-fn link_target(path: &Path) -> Result<PathBuf> {
-    let mut path = path.to_path_buf();
-    // The system also follows at most 40 links.
-    for _ in 0..40 {
+fn link_target(link: &Path) -> Result<PathBuf> {
+    let mut path = link.to_path_buf();
+    // The loop also looks at the end of the 40th link, so it follows 40
+    // links, as the system does, and it refuses the 41st.
+    for _ in 0..=MAX_LINKS {
         match std::fs::symlink_metadata(&path) {
             Ok(md) if md.file_type().is_symlink() => {
                 let next = std::fs::read_link(&path)
@@ -340,7 +380,10 @@ fn link_target(path: &Path) -> Result<PathBuf> {
             _ => return Ok(path),
         }
     }
-    bail!("{} is a loop of links", path.display())
+    bail!(
+        "{} is a chain of more than {MAX_LINKS} links",
+        link.display()
+    )
 }
 
 /// A repository: the host and the path of its remote URL, in a normal form.
@@ -613,6 +656,24 @@ mod tests {
         toml::from_str("[repos.\"github.com/owner/repo\"]\nlink = [\".env\"]\n").unwrap()
     }
 
+    /// The hook reads the config while a `wt share` can write it. A write
+    /// into the file empties it first, so a reader can get part of a file.
+    #[test]
+    fn a_reader_of_the_old_file_reads_it_whole() {
+        use std::io::Read;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "old").unwrap();
+        let mut reader = std::fs::File::open(&path).unwrap();
+
+        one_path().write_to(&path).unwrap();
+
+        let mut text = String::new();
+        reader.read_to_string(&mut text).unwrap();
+        assert_eq!(text, "old");
+        assert!(std::fs::read_to_string(&path).unwrap().contains(".env"));
+    }
+
     /// The config can be a link into the dotfiles, also before the dotfiles
     /// have the file. The file stays a link, its target gets the new text,
     /// and no temporary file stays.
@@ -674,6 +735,63 @@ mod tests {
         one_path().write_to(&path).unwrap();
 
         assert!(std::fs::read_to_string(&dotfiles).unwrap().contains(".env"));
+    }
+
+    /// `count` links in a row in `dir`, and the last one points to
+    /// `config.toml`. Gives the first link.
+    fn chain_of_links(dir: &Path, count: usize) -> PathBuf {
+        for i in 0..count {
+            let target = if i + 1 == count {
+                "config.toml".to_string()
+            } else {
+                format!("link{}", i + 1)
+            };
+            std::os::unix::fs::symlink(target, dir.join(format!("link{i}"))).unwrap();
+        }
+        dir.join("link0")
+    }
+
+    #[test]
+    fn a_chain_of_40_links_is_followed_as_linux_does() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let first = chain_of_links(tmp.path(), MAX_LINKS);
+
+        one_path().write_to(&first).unwrap();
+
+        // macOS follows at most 32 links, so read the file at the end of the
+        // chain and not the chain.
+        let file = tmp.path().join("config.toml");
+        assert!(std::fs::read_to_string(file).unwrap().contains(".env"));
+    }
+
+    #[test]
+    fn a_chain_of_41_links_is_refused() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let first = chain_of_links(tmp.path(), MAX_LINKS + 1);
+
+        let error = one_path().write_to(&first).unwrap_err().to_string();
+
+        assert!(error.contains("more than 40 links"), "{error}");
+        assert!(!tmp.path().join("config.toml").exists());
+    }
+
+    /// A wt with the same pid, in a different PID namespace or on a
+    /// different host of one home directory, writes the temporary file.
+    #[test]
+    fn the_temporary_file_of_another_process_stays_as_it_is() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "old").unwrap();
+        let other = tmp
+            .path()
+            .join(format!(".config.toml.{}.tmp", std::process::id()));
+        std::fs::write(&other, "other").unwrap();
+
+        let error = one_path().write_to(&path).unwrap_err().to_string();
+
+        assert!(error.contains("wt cannot write"), "{error}");
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "other");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
     }
 
     /// Each path that `wt share` gets can fail, and the entry then has no
