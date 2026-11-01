@@ -99,8 +99,16 @@ fn below_link(worktree: &Path, entry: &SharedPath) -> Result<bool> {
             Ok(md) if md.file_type().is_symlink() => return Ok(true),
             Ok(_) => {}
             // `link` makes each absent directory, and a new directory is not
-            // a link.
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+            // a link. Below a file the system gives "not a directory", and a
+            // file is not a link either. The next tests report the path.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) =>
+            {
+                return Ok(false);
+            }
             Err(e) => {
                 return Err(e)
                     .with_context(|| format!("wt cannot read the path {}", above.display()));
@@ -393,6 +401,16 @@ mod tests {
         let out = seed_entry(&f.shared, &f.worktree, &entry(".env"), false).unwrap();
         assert_eq!(out, Outcome::MissingInStore);
         assert!(!f.worktree.join(".env").exists());
+    }
+
+    /// A file above the path is not a link. An error would stop `wt sync`
+    /// before the next path.
+    #[test]
+    fn the_tool_reports_a_path_below_a_file_that_the_store_does_not_have() {
+        let f = fixture();
+        write(&f.worktree, "a", "a file, and not a directory");
+        let out = seed_entry(&f.shared, &f.worktree, &entry("a/b/x.env"), false).unwrap();
+        assert_eq!(out, Outcome::MissingInStore);
     }
 
     #[test]
