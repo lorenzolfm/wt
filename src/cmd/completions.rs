@@ -54,12 +54,14 @@ pub fn shareable(repo: &Repo) -> Result<()> {
             "--ignored",
             "--exclude-standard",
             "--directory",
+            // With no -z, git puts a name that is not ASCII in quotes.
+            "-z",
         ],
     )?;
     let already = repo.manifest().unwrap_or_default();
-    for line in text.lines() {
+    for name in text.split('\0') {
         // Git gives a directory with `/` at the end. The shared path has none.
-        if let Ok(path) = SharedPath::try_from(line.to_string())
+        if let Ok(path) = SharedPath::try_from(name.to_string())
             && already.link.overlap(&path).is_none()
         {
             println!("{path}");
