@@ -245,8 +245,12 @@ link.
 |---|---|
 | The two files are the same. | `wt` replaces the file with a link. |
 | The two files are different. | `wt` keeps the file and prints a message. |
+| A directory above the path is a link. | `wt` changes nothing and prints a message. |
 
-Use the option `--force` to replace a file that is different.
+Use the option `--force` to replace a file that is different. A path below a
+link is not in the worktree: when `.auth` is a link to the store,
+`.auth/token` is the file in the store. `wt` changes nothing there, also with
+`--force`.
 
 ### Commands
 
