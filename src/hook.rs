@@ -164,14 +164,17 @@ fn report(shared: &Path, worktree: &Path, entries: &[SharedPath]) -> Result<()> 
     let mut linked = 0usize;
     for entry in entries {
         match seed::seed_entry(shared, worktree, entry, false)? {
-            o if o.is_change() => linked += 1,
+            Outcome::Linked | Outcome::Replaced | Outcome::Forced => linked += 1,
             Outcome::SkippedDivergent => {
                 eprintln!("wt: {entry}: a different file is present. wt kept it")
             }
             Outcome::MissingInStore => {
                 eprintln!("wt: {entry}: the config gives this path, the store does not have it")
             }
-            _ => {}
+            Outcome::SkippedBelowLink => {
+                eprintln!("wt: {entry}: a directory above this path is a link. wt changed nothing")
+            }
+            Outcome::AlreadyLinked => {}
         }
     }
     if linked > 0 {

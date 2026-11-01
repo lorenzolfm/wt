@@ -39,6 +39,10 @@ impl RepoConfig {
 /// person can edit the config file and wt still removes nothing outside the
 /// worktree.
 ///
+/// The names cannot show a link in a directory above the path, which also
+/// gives a path outside the worktree. `seed::inspect` reads the worktree for
+/// that, and wt changes nothing below a link.
+///
 /// A `/` at the end makes the system follow a link. A correct link to a
 /// directory in the store then looks like a copy of the store, and wt would
 /// remove the store. The path therefore keeps only its names: `.auth/` is

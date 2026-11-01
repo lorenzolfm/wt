@@ -15,6 +15,7 @@ pub fn run(repo: &Repo, force: bool) -> Result<()> {
     let shared = repo.shared();
     let mut changes = 0usize;
     let mut skipped = 0usize;
+    let mut below_link = 0usize;
 
     for wt in repo.worktrees()? {
         for entry in &manifest.link {
@@ -38,16 +39,30 @@ pub fn run(repo: &Repo, force: bool) -> Result<()> {
                     );
                     skipped += 1;
                 }
+                Outcome::SkippedBelowLink => {
+                    eprintln!(
+                        "  skipped    {}/{}  (a directory above it is a link)",
+                        wt.name(),
+                        entry
+                    );
+                    below_link += 1;
+                }
                 Outcome::AlreadyLinked => {}
             }
         }
     }
 
-    if changes == 0 && skipped == 0 {
+    if changes == 0 && skipped == 0 && below_link == 0 {
         eprintln!("each worktree is correct");
     } else if skipped > 0 {
         eprintln!(
             "{changes} link(s) made. {skipped} path(s) need your attention. use --force to replace them"
+        );
+    }
+    // --force does not change a path below a link.
+    if below_link > 0 {
+        eprintln!(
+            "{below_link} path(s) are below a link, and wt changes nothing there. remove the link, or remove the path from the config"
         );
     }
     Ok(())

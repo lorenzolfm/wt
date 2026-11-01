@@ -114,6 +114,10 @@ fn backfill(repo: &Repo, entry: &SharedPath, force: bool) -> Result<()> {
                 "  skipped    {}  (a different file is present. use --force to replace it)",
                 wt.name()
             ),
+            Outcome::SkippedBelowLink => eprintln!(
+                "  skipped    {}  (a directory above the path is a link)",
+                wt.name()
+            ),
             Outcome::MissingInStore | Outcome::AlreadyLinked => {}
         }
     }

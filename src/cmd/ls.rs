@@ -67,6 +67,7 @@ fn links(shared: &std::path::Path, wt: &crate::repo::Worktree, entries: &[Shared
             Ok(State::SameFile) => problems.push(format!("{entry} is a copy")),
             Ok(State::DifferentFile) => problems.push(format!("{entry} differs")),
             Ok(State::MissingInStore) => problems.push(format!("{entry} not in store")),
+            Ok(State::BelowLink) => problems.push(format!("{entry} below a link")),
             Err(e) => problems.push(format!("{entry}: {e}")),
         }
     }
