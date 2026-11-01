@@ -165,7 +165,12 @@ fn relative_entry(toplevel: &Path, cwd: &Path, raw: &str) -> Result<SharedPath> 
     if rel.as_os_str().is_empty() {
         bail!("wt cannot share the top directory of the worktree");
     }
-    SharedPath::try_from(rel.to_string_lossy().into_owned()).map_err(anyhow::Error::msg)
+    // The config file holds only UTF-8. A name that is not UTF-8 would
+    // become a different name.
+    let rel = rel
+        .to_str()
+        .context("the config file holds only UTF-8, and this path is not UTF-8")?;
+    SharedPath::try_from(rel.to_string()).map_err(anyhow::Error::msg)
 }
 
 fn display_rel(base: &Path, p: &Path) -> String {
@@ -173,4 +178,22 @@ fn display_rel(base: &Path, p: &Path) -> String {
         .unwrap_or(p)
         .to_string_lossy()
         .into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    /// The config file holds only UTF-8. A name that is not UTF-8 would
+    /// become a different path.
+    #[test]
+    fn a_path_that_is_not_utf8_is_refused() {
+        let cwd = Path::new("/top").join(OsStr::from_bytes(b"sub\xff"));
+
+        let error = relative_entry(Path::new("/top"), &cwd, ".env").unwrap_err();
+
+        assert!(error.to_string().contains("not UTF-8"), "{error}");
+    }
 }
