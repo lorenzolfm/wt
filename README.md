@@ -285,7 +285,23 @@ link = [".env.override", ".auth", ".envrc"]
 
 The key is the remote URL in a normal form. Each form of the URL gives the
 same key, so one file is correct for SSH and for HTTPS, and on each machine.
-Put this file in your dotfiles to keep the list.
+Put this file in your dotfiles to keep the list. The file can be a link into
+the dotfiles, as GNU Stow makes it: `wt` changes the file that the link points
+to, and the link stays.
+
+`wt` writes the new file beside the old one, and then renames it over the old
+one. A crash or a full disk leaves the old file whole. A crash can also leave
+`.config.toml.<pid>.tmp` beside the file. For a link, it is beside the file
+that the link points to, and it has the name of that file. `wt` does not read
+it, and you can remove it. While it is there, a later `wt` with the same pid
+cannot write the config.
+
+In two cases `wt` writes into the old file, and a crash can leave part of it.
+The file can be a hard link, and a rename would give the new text to one name
+only. A container can also mount the config as one file, as
+`docker run -v ~/.config/wt/config.toml:...` does, and a rename cannot replace
+a mount point. Mount the directory `~/.config/wt` instead to keep the write in
+one step.
 
 A repository has an entry only when it has a shared path. `wt share` adds the
 entry with the first path, and `wt init` writes nothing to the file.
