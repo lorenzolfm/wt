@@ -1,3 +1,4 @@
+use crate::config::SharedPath;
 use anyhow::{Context, Result};
 use std::fs;
 use std::io;
@@ -17,12 +18,8 @@ pub enum Outcome {
     SkippedDivergent,
     /// The manifest gives a path, but the store does not contain it.
     MissingInStore,
-}
-
-impl Outcome {
-    pub fn is_change(self) -> bool {
-        matches!(self, Outcome::Linked | Outcome::Replaced | Outcome::Forced)
-    }
+    /// A directory above the path is a link. The tool changed nothing.
+    SkippedBelowLink,
 }
 
 /// The condition of one manifest path in one worktree.
@@ -44,13 +41,21 @@ pub enum State {
     DifferentFile,
     /// The store does not contain the path.
     MissingInStore,
+    /// A directory above the path is a link, so the path is not in the
+    /// worktree.
+    BelowLink,
 }
 
 /// Find the condition of one manifest path. This function changes nothing.
-pub fn inspect(shared: &Path, worktree: &Path, entry: &str) -> Result<State> {
+pub fn inspect(shared: &Path, worktree: &Path, entry: &SharedPath) -> Result<State> {
     let src = shared.join(entry);
     let dst = worktree.join(entry);
 
+    // This test is first. Below a link, `link` would also make directories
+    // outside the worktree.
+    if below_link(worktree, entry)? {
+        return Ok(State::BelowLink);
+    }
     if !src.exists() {
         return Ok(State::MissingInStore);
     }
@@ -75,16 +80,60 @@ pub fn inspect(shared: &Path, worktree: &Path, entry: &str) -> Result<State> {
     }
 }
 
+/// True when a directory above `entry` in `worktree` is a link.
+///
+/// `symlink_metadata` does not follow the last name, but the system follows
+/// each name above it. Below a link to the store, the path is the file in the
+/// store, so `same_content` compares the store with itself and `remove`
+/// removes the store. Below a different link, the path is outside the
+/// worktree.
+fn below_link(worktree: &Path, entry: &SharedPath) -> Result<bool> {
+    // A shared path has only names, with `/` between them.
+    let Some((parents, _)) = entry.as_str().rsplit_once('/') else {
+        return Ok(false);
+    };
+    let mut above = worktree.to_path_buf();
+    for name in parents.split('/') {
+        above.push(name);
+        match fs::symlink_metadata(&above) {
+            Ok(md) if md.file_type().is_symlink() => return Ok(true),
+            Ok(_) => {}
+            // `link` makes each absent directory, and a new directory is not
+            // a link. Below a file the system gives "not a directory", and a
+            // file is not a link either. The next tests report the path.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) =>
+            {
+                return Ok(false);
+            }
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("wt cannot read the path {}", above.display()));
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// Compare one manifest path in one worktree, and make a link.
 ///
 /// The tool must not destroy a file that is different from the file in the
 /// store. A file with the same bytes is safe to replace, because the bytes
 /// stay at the target of the link.
-pub fn seed_entry(shared: &Path, worktree: &Path, entry: &str, force: bool) -> Result<Outcome> {
+pub fn seed_entry(
+    shared: &Path,
+    worktree: &Path,
+    entry: &SharedPath,
+    force: bool,
+) -> Result<Outcome> {
     let src = shared.join(entry);
     let dst = worktree.join(entry);
 
     match inspect(shared, worktree, entry)? {
+        State::BelowLink => Ok(Outcome::SkippedBelowLink),
         State::MissingInStore => Ok(Outcome::MissingInStore),
         State::Linked => Ok(Outcome::AlreadyLinked),
         State::Absent => {
@@ -200,6 +249,10 @@ mod tests {
         }
     }
 
+    fn entry(path: &str) -> SharedPath {
+        SharedPath::try_from(path.to_string()).unwrap()
+    }
+
     fn write(root: &Path, rel: &str, body: &str) -> PathBuf {
         let path = root.join(rel);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -211,7 +264,7 @@ mod tests {
     fn the_tool_makes_a_link_when_the_path_is_empty() {
         let f = fixture();
         write(&f.shared, ".env", "A");
-        let out = seed_entry(&f.shared, &f.worktree, ".env", false).unwrap();
+        let out = seed_entry(&f.shared, &f.worktree, &entry(".env"), false).unwrap();
         assert_eq!(out, Outcome::Linked);
         assert_eq!(
             fs::read_link(f.worktree.join(".env")).unwrap(),
@@ -223,7 +276,13 @@ mod tests {
     fn the_tool_makes_a_link_in_a_directory_below_the_worktree() {
         let f = fixture();
         write(&f.shared, "terraform/vars.tfvars", "A");
-        let out = seed_entry(&f.shared, &f.worktree, "terraform/vars.tfvars", false).unwrap();
+        let out = seed_entry(
+            &f.shared,
+            &f.worktree,
+            &entry("terraform/vars.tfvars"),
+            false,
+        )
+        .unwrap();
         assert_eq!(out, Outcome::Linked);
         assert!(f.worktree.join("terraform/vars.tfvars").exists());
     }
@@ -232,8 +291,8 @@ mod tests {
     fn the_tool_keeps_a_link_that_is_correct() {
         let f = fixture();
         write(&f.shared, ".env", "A");
-        seed_entry(&f.shared, &f.worktree, ".env", false).unwrap();
-        let out = seed_entry(&f.shared, &f.worktree, ".env", false).unwrap();
+        seed_entry(&f.shared, &f.worktree, &entry(".env"), false).unwrap();
+        let out = seed_entry(&f.shared, &f.worktree, &entry(".env"), false).unwrap();
         assert_eq!(out, Outcome::AlreadyLinked);
     }
 
@@ -243,7 +302,7 @@ mod tests {
         write(&f.shared, ".env", "A");
         let other = write(&f.shared, "other", "B");
         std::os::unix::fs::symlink(&other, f.worktree.join(".env")).unwrap();
-        let out = seed_entry(&f.shared, &f.worktree, ".env", false).unwrap();
+        let out = seed_entry(&f.shared, &f.worktree, &entry(".env"), false).unwrap();
         assert_eq!(out, Outcome::Linked);
         assert_eq!(
             fs::read_link(f.worktree.join(".env")).unwrap(),
@@ -256,7 +315,7 @@ mod tests {
         let f = fixture();
         write(&f.shared, ".env", "A");
         write(&f.worktree, ".env", "A");
-        let out = seed_entry(&f.shared, &f.worktree, ".env", false).unwrap();
+        let out = seed_entry(&f.shared, &f.worktree, &entry(".env"), false).unwrap();
         assert_eq!(out, Outcome::Replaced);
         assert!(
             fs::symlink_metadata(f.worktree.join(".env"))
@@ -270,7 +329,7 @@ mod tests {
         let f = fixture();
         write(&f.shared, ".env", "A");
         write(&f.worktree, ".env", "DIFFERENT");
-        let out = seed_entry(&f.shared, &f.worktree, ".env", false).unwrap();
+        let out = seed_entry(&f.shared, &f.worktree, &entry(".env"), false).unwrap();
         assert_eq!(out, Outcome::SkippedDivergent);
         // The bytes must stay. This is the most important test in the file.
         assert_eq!(
@@ -289,17 +348,69 @@ mod tests {
         let f = fixture();
         write(&f.shared, ".env", "A");
         write(&f.worktree, ".env", "DIFFERENT");
-        let out = seed_entry(&f.shared, &f.worktree, ".env", true).unwrap();
+        let out = seed_entry(&f.shared, &f.worktree, &entry(".env"), true).unwrap();
         assert_eq!(out, Outcome::Forced);
         assert_eq!(fs::read_to_string(f.worktree.join(".env")).unwrap(), "A");
+    }
+
+    /// Below a link to the store, the path is the file in the store. The
+    /// store must keep its bytes, also with --force.
+    #[test]
+    fn the_tool_changes_nothing_below_a_link_to_the_store() {
+        let f = fixture();
+        write(&f.shared, ".auth/token", "A");
+        std::os::unix::fs::symlink(f.shared.join(".auth"), f.worktree.join(".auth")).unwrap();
+
+        let out = seed_entry(&f.shared, &f.worktree, &entry(".auth/token"), true).unwrap();
+
+        assert_eq!(out, Outcome::SkippedBelowLink);
+        assert_eq!(
+            fs::read_to_string(f.shared.join(".auth/token")).unwrap(),
+            "A"
+        );
+    }
+
+    /// Below a link to a different directory, the path is outside the
+    /// worktree. The file there must stay, also with --force.
+    #[test]
+    fn the_tool_changes_nothing_below_a_link_out_of_the_worktree() {
+        let f = fixture();
+        write(&f.shared, "terraform/vars.tfvars", "A");
+        let outside = f.worktree.parent().unwrap().join("outside");
+        write(&outside, "vars.tfvars", "B");
+        std::os::unix::fs::symlink(&outside, f.worktree.join("terraform")).unwrap();
+
+        let out = seed_entry(
+            &f.shared,
+            &f.worktree,
+            &entry("terraform/vars.tfvars"),
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(out, Outcome::SkippedBelowLink);
+        assert_eq!(
+            fs::read_to_string(outside.join("vars.tfvars")).unwrap(),
+            "B"
+        );
     }
 
     #[test]
     fn the_tool_reports_a_path_that_the_store_does_not_have() {
         let f = fixture();
-        let out = seed_entry(&f.shared, &f.worktree, ".env", false).unwrap();
+        let out = seed_entry(&f.shared, &f.worktree, &entry(".env"), false).unwrap();
         assert_eq!(out, Outcome::MissingInStore);
         assert!(!f.worktree.join(".env").exists());
+    }
+
+    /// A file above the path is not a link. An error would stop `wt sync`
+    /// before the next path.
+    #[test]
+    fn the_tool_reports_a_path_below_a_file_that_the_store_does_not_have() {
+        let f = fixture();
+        write(&f.worktree, "a", "a file, and not a directory");
+        let out = seed_entry(&f.shared, &f.worktree, &entry("a/b/x.env"), false).unwrap();
+        assert_eq!(out, Outcome::MissingInStore);
     }
 
     #[test]
@@ -309,7 +420,7 @@ mod tests {
         write(&f.shared, ".auth/b.json", "2");
         write(&f.worktree, ".auth/a.json", "1");
         write(&f.worktree, ".auth/b.json", "2");
-        let out = seed_entry(&f.shared, &f.worktree, ".auth", false).unwrap();
+        let out = seed_entry(&f.shared, &f.worktree, &entry(".auth"), false).unwrap();
         assert_eq!(out, Outcome::Replaced);
     }
 
@@ -318,7 +429,7 @@ mod tests {
         let f = fixture();
         write(&f.shared, ".auth/a.json", "1");
         write(&f.worktree, ".auth/a.json", "CHANGED");
-        let out = seed_entry(&f.shared, &f.worktree, ".auth", false).unwrap();
+        let out = seed_entry(&f.shared, &f.worktree, &entry(".auth"), false).unwrap();
         assert_eq!(out, Outcome::SkippedDivergent);
         assert_eq!(
             fs::read_to_string(f.worktree.join(".auth/a.json")).unwrap(),
@@ -356,7 +467,7 @@ mod tests {
         write(&f.shared, ".env", "A");
 
         assert_eq!(
-            inspect(&f.shared, &f.worktree, ".env").unwrap(),
+            inspect(&f.shared, &f.worktree, &entry(".env")).unwrap(),
             State::Absent
         );
         // The report must not make the link.
@@ -364,7 +475,7 @@ mod tests {
 
         write(&f.worktree, ".env", "A");
         assert_eq!(
-            inspect(&f.shared, &f.worktree, ".env").unwrap(),
+            inspect(&f.shared, &f.worktree, &entry(".env")).unwrap(),
             State::SameFile
         );
         assert!(
@@ -375,15 +486,15 @@ mod tests {
 
         fs::write(f.worktree.join(".env"), "B").unwrap();
         assert_eq!(
-            inspect(&f.shared, &f.worktree, ".env").unwrap(),
+            inspect(&f.shared, &f.worktree, &entry(".env")).unwrap(),
             State::DifferentFile
         );
         assert_eq!(fs::read_to_string(f.worktree.join(".env")).unwrap(), "B");
 
         fs::remove_file(f.worktree.join(".env")).unwrap();
-        seed_entry(&f.shared, &f.worktree, ".env", false).unwrap();
+        seed_entry(&f.shared, &f.worktree, &entry(".env"), false).unwrap();
         assert_eq!(
-            inspect(&f.shared, &f.worktree, ".env").unwrap(),
+            inspect(&f.shared, &f.worktree, &entry(".env")).unwrap(),
             State::Linked
         );
     }
@@ -395,7 +506,7 @@ mod tests {
         let other = write(&f.shared, "other", "B");
         std::os::unix::fs::symlink(&other, f.worktree.join(".env")).unwrap();
         assert_eq!(
-            inspect(&f.shared, &f.worktree, ".env").unwrap(),
+            inspect(&f.shared, &f.worktree, &entry(".env")).unwrap(),
             State::WrongLink
         );
     }
@@ -404,7 +515,7 @@ mod tests {
     fn inspect_reports_a_path_that_the_store_does_not_have() {
         let f = fixture();
         assert_eq!(
-            inspect(&f.shared, &f.worktree, ".env").unwrap(),
+            inspect(&f.shared, &f.worktree, &entry(".env")).unwrap(),
             State::MissingInStore
         );
     }

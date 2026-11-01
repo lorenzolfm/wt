@@ -1,9 +1,10 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::path::PathBuf;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 
 /// The list of shared paths for one repository.
 ///
@@ -13,19 +14,163 @@ use std::path::PathBuf;
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct RepoConfig {
     #[serde(default)]
-    pub link: Vec<String>,
+    pub link: SharedPaths,
 }
 
-impl RepoConfig {
-    pub fn contains(&self, entry: &str) -> bool {
-        self.link.iter().any(|e| e == entry)
+/// The shared paths of one repository, each one time, in order. No path is
+/// inside a different one.
+///
+/// With a link at `.auth`, the path `.auth/token` is the file in the store,
+/// and wt changes nothing below a link. A list with both paths is therefore
+/// never correct. The same path two times loses nothing, so the list keeps
+/// it one time, as `.auth/` is `.auth`.
+///
+/// `try_from` and `insert` are the only ways to add a path, so each list has
+/// this form.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(try_from = "Vec<SharedPath>", into = "Vec<SharedPath>")]
+pub struct SharedPaths(BTreeSet<SharedPath>);
+
+impl SharedPaths {
+    /// The path in the list that is `entry`, holds it, or is inside it.
+    pub fn overlap(&self, entry: &SharedPath) -> Option<&SharedPath> {
+        self.0.iter().find(|p| p.holds(entry) || entry.holds(p))
     }
 
-    pub fn insert(&mut self, entry: &str) {
-        if !self.contains(entry) {
-            self.link.push(entry.to_string());
-            self.link.sort();
+    pub fn insert(&mut self, entry: SharedPath) -> Result<(), String> {
+        match self.overlap(&entry) {
+            None => {
+                self.0.insert(entry);
+                Ok(())
+            }
+            Some(same) if *same == entry => Ok(()),
+            Some(other) => {
+                let (outer, inner) = if other.holds(&entry) {
+                    (other, &entry)
+                } else {
+                    (&entry, other)
+                };
+                Err(format!(
+                    "{:?} is inside {:?}. keep one of them",
+                    inner.as_str(),
+                    outer.as_str()
+                ))
+            }
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &SharedPath> {
+        self.0.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a SharedPaths {
+    type Item = &'a SharedPath;
+    type IntoIter = std::collections::btree_set::Iter<'a, SharedPath>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl TryFrom<Vec<SharedPath>> for SharedPaths {
+    type Error = String;
+
+    fn try_from(paths: Vec<SharedPath>) -> Result<Self, Self::Error> {
+        let mut list = SharedPaths::default();
+        for p in paths {
+            list.insert(p)?;
+        }
+        Ok(list)
+    }
+}
+
+impl From<SharedPaths> for Vec<SharedPath> {
+    fn from(list: SharedPaths) -> Vec<SharedPath> {
+        list.0.into_iter().collect()
+    }
+}
+
+/// A shared path: names below the top of the worktree, with `/` between
+/// them.
+///
+/// wt joins the path to the store and to each worktree, and it removes the
+/// file that it finds there. An absolute path gives the same file in the
+/// store and in the worktree. An empty path, `.` and `..` give the worktree
+/// itself or a path outside it. The constructor refuses each of them, so a
+/// person can edit the config file and wt still removes nothing outside the
+/// worktree.
+///
+/// The names cannot show a link in a directory above the path, which also
+/// gives a path outside the worktree. `seed::inspect` reads the worktree for
+/// that, and wt changes nothing below a link.
+///
+/// A `/` at the end makes the system follow a link. A correct link to a
+/// directory in the store then looks like a copy of the store, and wt would
+/// remove the store. The path therefore keeps only its names: `.auth/` is
+/// `.auth`.
+///
+/// `try_from` is the only constructor, so each path has this form.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct SharedPath(String);
+
+impl SharedPath {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// True when `other` is this path or a path below it. The names decide:
+    /// `.auth` holds `.auth/token` and not `.auth-old`.
+    pub fn holds(&self, other: &SharedPath) -> bool {
+        other.0 == self.0
+            || other
+                .0
+                .strip_prefix(&self.0)
+                .is_some_and(|rest| rest.starts_with('/'))
+    }
+}
+
+impl TryFrom<String> for SharedPath {
+    type Error = String;
+
+    fn try_from(raw: String) -> Result<Self, Self::Error> {
+        let names: Vec<&str> = raw.split('/').filter(|n| !n.is_empty()).collect();
+        if raw.starts_with('/')
+            || names.is_empty()
+            || names.iter().any(|n| matches!(*n, "." | ".."))
+        {
+            return Err(format!(
+                "{raw:?} is not a path in the worktree. give it from the top of the worktree, with no `.` or `..`"
+            ));
+        }
+        Ok(SharedPath(names.join("/")))
+    }
+}
+
+impl From<SharedPath> for String {
+    fn from(p: SharedPath) -> String {
+        p.0
+    }
+}
+
+impl AsRef<Path> for SharedPath {
+    fn as_ref(&self) -> &Path {
+        Path::new(&self.0)
+    }
+}
+
+impl fmt::Display for SharedPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -108,13 +253,60 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = Self::path()?;
+        self.write_to(&Self::path()?)
+    }
+
+    /// Write the file at `path` in one step. A reader, for example the hook
+    /// in a different terminal, then reads the old file or the new file, and
+    /// never a part of one. The new file gets the mode of the old file.
+    ///
+    /// The file can be a link into the dotfiles. A rename over the link
+    /// would put a plain file in its place, so the function writes the
+    /// target of the link.
+    ///
+    /// In two cases the function writes the old file itself, and a reader
+    /// can read a part of it:
+    /// - The file has a second name, a hard link. A rename would give the
+    ///   new text to one name only.
+    /// - The file is a mount point, for example in a container. The system
+    ///   refuses the rename.
+    fn write_to(&self, path: &Path) -> Result<()> {
+        let path = link_target(path)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("wt cannot make the directory {}", parent.display()))?;
         }
         let body = toml::to_string_pretty(self)?;
-        std::fs::write(&path, body).with_context(|| format!("wt cannot write {}", path.display()))
+        let in_place = || {
+            std::fs::write(&path, &body)
+                .with_context(|| format!("wt cannot write {}", path.display()))
+        };
+        let old = std::fs::metadata(&path).ok();
+        if old.as_ref().is_some_and(|md| md.nlink() > 1) {
+            return in_place();
+        }
+        // The process id gives each wt that writes a different name.
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let tmp = path.with_file_name(format!(".{name}.{}", std::process::id()));
+        let written = std::fs::write(&tmp, &body)
+            .and_then(|()| match &old {
+                Some(md) => std::fs::set_permissions(&tmp, md.permissions()),
+                None => Ok(()),
+            })
+            .and_then(|()| std::fs::rename(&tmp, &path));
+        match written {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                if e.kind() == std::io::ErrorKind::ResourceBusy {
+                    return in_place();
+                }
+                Err(e).with_context(|| format!("wt cannot write {}", path.display()))
+            }
+        }
     }
 
     pub fn repo(&self, key: &RepoKey) -> Option<&RepoConfig> {
@@ -124,6 +316,31 @@ impl Config {
     pub fn repo_mut(&mut self, key: &RepoKey) -> &mut RepoConfig {
         self.repos.entry(key.clone()).or_default()
     }
+}
+
+/// The file at the end of the links from `path`.
+///
+/// The file does not need to exist: a link into the dotfiles can point to a
+/// file that the dotfiles do not have yet. `canonicalize` fails on such a
+/// link.
+fn link_target(path: &Path) -> Result<PathBuf> {
+    let mut path = path.to_path_buf();
+    // The system also follows at most 40 links.
+    for _ in 0..40 {
+        match std::fs::symlink_metadata(&path) {
+            Ok(md) if md.file_type().is_symlink() => {
+                let next = std::fs::read_link(&path)
+                    .with_context(|| format!("wt cannot read the link {}", path.display()))?;
+                // A relative target starts at the directory of the link.
+                path = match path.parent() {
+                    Some(dir) => dir.join(next),
+                    None => next,
+                };
+            }
+            _ => return Ok(path),
+        }
+    }
+    bail!("{} is a loop of links", path.display())
 }
 
 /// A repository: the host and the path of its remote URL, in a normal form.
@@ -219,6 +436,14 @@ impl fmt::Display for RepoKey {
 mod tests {
     use super::*;
 
+    fn path(raw: &str) -> SharedPath {
+        SharedPath::try_from(raw.to_string()).unwrap()
+    }
+
+    fn names(link: &SharedPaths) -> Vec<&str> {
+        link.iter().map(SharedPath::as_str).collect()
+    }
+
     #[test]
     fn each_url_form_gives_the_same_key() {
         for url in [
@@ -268,6 +493,95 @@ mod tests {
         );
     }
 
+    /// A person can edit the file. wt removes the file at each path, so a
+    /// path that is not below the top of the worktree must not load.
+    #[test]
+    fn a_config_with_a_path_outside_the_worktree_is_refused() {
+        for raw in [
+            "/home/you/project/main/.env",
+            "/",
+            "",
+            ".",
+            "..",
+            "../.env",
+            "./.env",
+            ".auth/.",
+            "a/../.env",
+        ] {
+            let text = format!("[repos.\"github.com/owner/repo\"]\nlink = [{raw:?}]\n");
+
+            let error = toml::from_str::<Config>(&text).unwrap_err().to_string();
+
+            assert!(
+                error.contains(&format!("{raw:?} is not a path in the worktree")),
+                "{error}"
+            );
+        }
+    }
+
+    /// With `/` at the end, the system follows a correct link into the
+    /// store, and the store looks like a copy of itself.
+    #[test]
+    fn a_slash_at_the_end_is_not_part_of_the_path() {
+        let text = "[repos.\"github.com/owner/repo\"]\n\
+                    link = [\".auth/\", \"terraform//vars.tfvars\"]\n";
+
+        let config: Config = toml::from_str(text).unwrap();
+
+        let link = &config
+            .repo(&RepoKey::from_url("github.com/owner/repo"))
+            .unwrap()
+            .link;
+        assert_eq!(names(link), [".auth", "terraform/vars.tfvars"]);
+    }
+
+    /// A link at `.auth` makes `.auth/token` the file in the store, so the
+    /// two paths are never correct together. The order does not matter.
+    #[test]
+    fn a_config_with_a_path_inside_a_different_one_is_refused() {
+        for link in [r#"[".auth", ".auth/token"]"#, r#"[".auth/token", ".auth"]"#] {
+            let text = format!("[repos.\"github.com/owner/repo\"]\nlink = {link}\n");
+
+            let error = toml::from_str::<Config>(&text).unwrap_err().to_string();
+
+            assert!(
+                error.contains(r#"".auth/token" is inside ".auth". keep one of them"#),
+                "{error}"
+            );
+        }
+    }
+
+    /// The names decide, and not the text: `.auth-old` is not inside
+    /// `.auth`.
+    #[test]
+    fn a_path_whose_text_starts_with_a_different_path_is_not_inside_it() {
+        let text = "[repos.\"github.com/owner/repo\"]\nlink = [\".auth\", \".auth-old\"]\n";
+
+        let config: Config = toml::from_str(text).unwrap();
+
+        let link = &config
+            .repo(&RepoKey::from_url("github.com/owner/repo"))
+            .unwrap()
+            .link;
+        assert_eq!(names(link), [".auth", ".auth-old"]);
+    }
+
+    /// The same path two times loses nothing, so the list keeps it one
+    /// time.
+    #[test]
+    fn a_path_two_times_is_one_path() {
+        let text = "[repos.\"github.com/owner/repo\"]\n\
+                    link = [\".env\", \".auth/\", \".env\", \".auth\"]\n";
+
+        let config: Config = toml::from_str(text).unwrap();
+
+        let link = &config
+            .repo(&RepoKey::from_url("github.com/owner/repo"))
+            .unwrap()
+            .link;
+        assert_eq!(names(link), [".auth", ".env"]);
+    }
+
     /// An older `wt init` wrote an entry with no path for each repository.
     /// Such an entry is the same as no entry, also in a different case.
     #[test]
@@ -279,17 +593,87 @@ mod tests {
         let config: Config = toml::from_str(text).unwrap();
 
         assert_eq!(config.repos.len(), 1);
-        assert!(
-            config
-                .repo(&RepoKey::from_url("github.com/owner/floresta"))
-                .unwrap()
-                .contains(".env")
+        assert_eq!(
+            names(
+                &config
+                    .repo(&RepoKey::from_url("github.com/owner/floresta"))
+                    .unwrap()
+                    .link
+            ),
+            [".env"]
         );
         assert!(
             config
                 .repo(&RepoKey::from_url("github.com/owner/wt"))
                 .is_none()
         );
+    }
+
+    fn one_path() -> Config {
+        toml::from_str("[repos.\"github.com/owner/repo\"]\nlink = [\".env\"]\n").unwrap()
+    }
+
+    /// The config can be a link into the dotfiles, also before the dotfiles
+    /// have the file. The file stays a link, its target gets the new text,
+    /// and no temporary file stays.
+    #[test]
+    fn a_config_that_is_a_link_stays_a_link() {
+        for target_is_present in [true, false] {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let dotfiles = tmp.path().join("dotfiles").join("wt.toml");
+            std::fs::create_dir_all(dotfiles.parent().unwrap()).unwrap();
+            if target_is_present {
+                std::fs::write(&dotfiles, "").unwrap();
+            }
+            let path = tmp.path().join("wt").join("config.toml");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink("../dotfiles/wt.toml", &path).unwrap();
+
+            one_path().write_to(&path).unwrap();
+
+            assert!(
+                std::fs::symlink_metadata(&path)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert!(std::fs::read_to_string(&dotfiles).unwrap().contains(".env"));
+            let names: Vec<_> = std::fs::read_dir(dotfiles.parent().unwrap())
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            assert_eq!(names, ["wt.toml"]);
+        }
+    }
+
+    /// A person can keep the config private with `chmod 600`.
+    #[test]
+    fn a_save_keeps_the_mode_of_the_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        one_path().write_to(&path).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    /// The config can be a hard link into the dotfiles. Each name of the
+    /// file gets the new text.
+    #[test]
+    fn a_config_that_is_a_hard_link_stays_one_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dotfiles = tmp.path().join("wt.toml");
+        std::fs::write(&dotfiles, "").unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::hard_link(&dotfiles, &path).unwrap();
+
+        one_path().write_to(&path).unwrap();
+
+        assert!(std::fs::read_to_string(&dotfiles).unwrap().contains(".env"));
     }
 
     /// Each path that `wt share` gets can fail, and the entry then has no
@@ -314,8 +698,8 @@ mod tests {
             toml::from_str("[repos.\"github.com/owner/Floresta\"]\nlink = [\".env\"]\n").unwrap();
         let key = RepoKey::from_url("git@github.com:owner/floresta.git");
 
-        assert!(config.repo(&key).unwrap().contains(".env"));
-        config.repo_mut(&key).insert("data");
+        assert_eq!(names(&config.repo(&key).unwrap().link), [".env"]);
+        config.repo_mut(&key).link.insert(path("data")).unwrap();
         let text = toml::to_string(&config).unwrap();
 
         assert_eq!(config.repos.len(), 1);

@@ -245,8 +245,12 @@ link.
 |---|---|
 | The two files are the same. | `wt` replaces the file with a link. |
 | The two files are different. | `wt` keeps the file and prints a message. |
+| A directory above the path is a link. | `wt` changes nothing and prints a message. |
 
-Use the option `--force` to replace a file that is different.
+Use the option `--force` to replace a file that is different. A path below a
+link is not in the worktree: when `.auth` is a link to the store,
+`.auth/token` is the file in the store. `wt` changes nothing there, also with
+`--force`.
 
 ### Commands
 
@@ -293,6 +297,17 @@ The case of the key does not matter, because GitHub ignores it. A clone of
 `you/Project` uses the entry for `you/project`. `wt` refuses a file with two
 keys that differ only in case. They are the same repository, so merge their
 lists into one entry. An entry with an empty list is not part of this rule.
+
+Each path starts at the top of the worktree, for example `.env` or
+`terraform/terraform.tfvars`. `wt` refuses a file with a path that is empty or
+absolute, or that has the name `.` or `..` in it, for example `../.env`. `wt`
+replaces the file at a shared path with a link, and such a path can give the
+worktree itself or a file outside it. A `/` at the end is not part of the
+path, so `.auth/` is `.auth`.
+
+`wt` also refuses a file with a path inside a different one, for example
+`.auth` and `.auth/token`. A link at `.auth` makes `.auth/token` the file in
+the store. The same path two times is one path.
 
 `wt` reads `$XDG_CONFIG_HOME/wt/config.toml` when that variable is set.
 

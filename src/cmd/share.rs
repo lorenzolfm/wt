@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{Config, SharedPath};
 use crate::git;
 use crate::repo::Repo;
 use crate::seed::{Outcome, seed_entry};
@@ -38,14 +38,22 @@ fn share_one(
     let source = toplevel.join(&entry);
     let stored = repo.shared().join(&entry);
 
-    if manifest.contains(&entry) {
-        bail!("the config file contains this path");
+    // Before wt moves anything: the list refuses a path inside a different
+    // one.
+    if let Some(other) = manifest.link.overlap(&entry) {
+        if *other == entry {
+            bail!("the config file contains this path");
+        }
+        bail!(
+            "the config file contains {other}, and one of the two paths is inside the other\n  \
+             remove {other} from the config first"
+        );
     }
 
     // Git supplies each tracked path. A link over a tracked path hides the
     // checkout. This test also refuses `wt share terraform` when git ignores
     // only terraform/terraform.tfvars.
-    let tracked = git::out(toplevel, &["ls-files", "--", &entry])?;
+    let tracked = git::out(toplevel, &["ls-files", "--", entry.as_str()])?;
     if !tracked.is_empty() {
         let first = tracked.lines().next().unwrap_or_default();
         bail!(
@@ -54,7 +62,7 @@ fn share_one(
         );
     }
 
-    if !git::ok(toplevel, &["check-ignore", "-q", "--", &entry]) {
+    if !git::ok(toplevel, &["check-ignore", "-q", "--", entry.as_str()]) {
         bail!("git does not ignore this path. wt controls only the ignored paths");
     }
 
@@ -68,7 +76,10 @@ fn share_one(
             && fs::read_link(&source).ok().as_deref() == Some(stored.as_path());
 
         if link_is_correct || !source.exists() {
-            manifest.insert(&entry);
+            manifest
+                .link
+                .insert(entry.clone())
+                .map_err(anyhow::Error::msg)?;
             eprintln!("  recorded   {entry}  (the store already has it)");
             backfill(repo, &entry, force)?;
             return Ok(());
@@ -98,13 +109,16 @@ fn share_one(
         entry
     );
 
-    manifest.insert(&entry);
+    manifest
+        .link
+        .insert(entry.clone())
+        .map_err(anyhow::Error::msg)?;
     backfill(repo, &entry, force)?;
     Ok(())
 }
 
 /// Make the link in each worktree. This worktree is one of them.
-fn backfill(repo: &Repo, entry: &str, force: bool) -> Result<()> {
+fn backfill(repo: &Repo, entry: &SharedPath, force: bool) -> Result<()> {
     let shared = repo.shared();
     let mut linked = Vec::new();
     for wt in repo.worktrees()? {
@@ -112,6 +126,10 @@ fn backfill(repo: &Repo, entry: &str, force: bool) -> Result<()> {
             Outcome::Linked | Outcome::Replaced | Outcome::Forced => linked.push(wt.name()),
             Outcome::SkippedDivergent => eprintln!(
                 "  skipped    {}  (a different file is present. use --force to replace it)",
+                wt.name()
+            ),
+            Outcome::SkippedBelowLink => eprintln!(
+                "  skipped    {}  (a directory above the path is a link)",
                 wt.name()
             ),
             Outcome::MissingInStore | Outcome::AlreadyLinked => {}
@@ -124,7 +142,7 @@ fn backfill(repo: &Repo, entry: &str, force: bool) -> Result<()> {
 }
 
 /// Change a path from the user into a path that is relative to the worktree.
-fn relative_entry(toplevel: &Path, cwd: &Path, raw: &str) -> Result<String> {
+fn relative_entry(toplevel: &Path, cwd: &Path, raw: &str) -> Result<SharedPath> {
     let joined = if Path::new(raw).is_absolute() {
         PathBuf::from(raw)
     } else {
@@ -147,7 +165,12 @@ fn relative_entry(toplevel: &Path, cwd: &Path, raw: &str) -> Result<String> {
     if rel.as_os_str().is_empty() {
         bail!("wt cannot share the top directory of the worktree");
     }
-    Ok(rel.to_string_lossy().into_owned())
+    // The config file holds only UTF-8. A name that is not UTF-8 would
+    // become a different name.
+    let rel = rel
+        .to_str()
+        .context("the config file holds only UTF-8, and this path is not UTF-8")?;
+    SharedPath::try_from(rel.to_string()).map_err(anyhow::Error::msg)
 }
 
 fn display_rel(base: &Path, p: &Path) -> String {
@@ -155,4 +178,22 @@ fn display_rel(base: &Path, p: &Path) -> String {
         .unwrap_or(p)
         .to_string_lossy()
         .into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    /// The config file holds only UTF-8. A name that is not UTF-8 would
+    /// become a different path.
+    #[test]
+    fn a_path_that_is_not_utf8_is_refused() {
+        let cwd = Path::new("/top").join(OsStr::from_bytes(b"sub\xff"));
+
+        let error = relative_entry(Path::new("/top"), &cwd, ".env").unwrap_err();
+
+        assert!(error.to_string().contains("not UTF-8"), "{error}");
+    }
 }
