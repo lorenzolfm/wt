@@ -252,13 +252,35 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = Self::path()?;
+        self.write_to(&Self::path()?)
+    }
+
+    /// Write the file at `path` in one step. A reader, for example the hook
+    /// in a different terminal, then reads the old file or the new file, and
+    /// never a part of one.
+    ///
+    /// The file can be a link into the dotfiles. A rename over the link
+    /// would put a plain file in its place, so the function writes the
+    /// target of the link.
+    fn write_to(&self, path: &Path) -> Result<()> {
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("wt cannot make the directory {}", parent.display()))?;
         }
         let body = toml::to_string_pretty(self)?;
-        std::fs::write(&path, body).with_context(|| format!("wt cannot write {}", path.display()))
+        // The process id gives each wt that writes a different name.
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let tmp = path.with_file_name(format!(".{name}.{}", std::process::id()));
+        std::fs::write(&tmp, body).with_context(|| format!("wt cannot write {}", tmp.display()))?;
+        if let Err(e) = std::fs::rename(&tmp, &path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e).with_context(|| format!("wt cannot write {}", path.display()));
+        }
+        Ok(())
     }
 
     pub fn repo(&self, key: &RepoKey) -> Option<&RepoConfig> {
@@ -534,6 +556,36 @@ mod tests {
                 .repo(&RepoKey::from_url("github.com/owner/wt"))
                 .is_none()
         );
+    }
+
+    /// The config can be a link into the dotfiles. The file stays a link,
+    /// its target gets the new text, and no temporary file stays.
+    #[test]
+    fn a_config_that_is_a_link_stays_a_link() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dotfiles = tmp.path().join("dotfiles").join("wt.toml");
+        std::fs::create_dir_all(dotfiles.parent().unwrap()).unwrap();
+        std::fs::write(&dotfiles, "").unwrap();
+        let path = tmp.path().join("wt").join("config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&dotfiles, &path).unwrap();
+        let config: Config =
+            toml::from_str("[repos.\"github.com/owner/repo\"]\nlink = [\".env\"]\n").unwrap();
+
+        config.write_to(&path).unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(std::fs::read_to_string(&dotfiles).unwrap().contains(".env"));
+        let names: Vec<_> = std::fs::read_dir(dotfiles.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["wt.toml"]);
     }
 
     /// Each path that `wt share` gets can fail, and the entry then has no
