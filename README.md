@@ -305,6 +305,10 @@ replaces the file at a shared path with a link, and such a path can give the
 worktree itself or a file outside it. A `/` at the end is not part of the
 path, so `.auth/` is `.auth`.
 
+`wt` also refuses a file with a path inside a different one, for example
+`.auth` and `.auth/token`. A link at `.auth` makes `.auth/token` the file in
+the store. The same path two times is one path.
+
 `wt` reads `$XDG_CONFIG_HOME/wt/config.toml` when that variable is set.
 
 The file holds no secret. It holds only path names. The content stays in the
