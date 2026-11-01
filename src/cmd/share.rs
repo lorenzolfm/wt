@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{Config, SharedPath};
 use crate::git;
 use crate::repo::Repo;
 use crate::seed::{Outcome, seed_entry};
@@ -45,7 +45,7 @@ fn share_one(
     // Git supplies each tracked path. A link over a tracked path hides the
     // checkout. This test also refuses `wt share terraform` when git ignores
     // only terraform/terraform.tfvars.
-    let tracked = git::out(toplevel, &["ls-files", "--", &entry])?;
+    let tracked = git::out(toplevel, &["ls-files", "--", entry.as_str()])?;
     if !tracked.is_empty() {
         let first = tracked.lines().next().unwrap_or_default();
         bail!(
@@ -54,7 +54,7 @@ fn share_one(
         );
     }
 
-    if !git::ok(toplevel, &["check-ignore", "-q", "--", &entry]) {
+    if !git::ok(toplevel, &["check-ignore", "-q", "--", entry.as_str()]) {
         bail!("git does not ignore this path. wt controls only the ignored paths");
     }
 
@@ -104,7 +104,7 @@ fn share_one(
 }
 
 /// Make the link in each worktree. This worktree is one of them.
-fn backfill(repo: &Repo, entry: &str, force: bool) -> Result<()> {
+fn backfill(repo: &Repo, entry: &SharedPath, force: bool) -> Result<()> {
     let shared = repo.shared();
     let mut linked = Vec::new();
     for wt in repo.worktrees()? {
@@ -124,7 +124,7 @@ fn backfill(repo: &Repo, entry: &str, force: bool) -> Result<()> {
 }
 
 /// Change a path from the user into a path that is relative to the worktree.
-fn relative_entry(toplevel: &Path, cwd: &Path, raw: &str) -> Result<String> {
+fn relative_entry(toplevel: &Path, cwd: &Path, raw: &str) -> Result<SharedPath> {
     let joined = if Path::new(raw).is_absolute() {
         PathBuf::from(raw)
     } else {
@@ -147,7 +147,7 @@ fn relative_entry(toplevel: &Path, cwd: &Path, raw: &str) -> Result<String> {
     if rel.as_os_str().is_empty() {
         bail!("wt cannot share the top directory of the worktree");
     }
-    Ok(rel.to_string_lossy().into_owned())
+    SharedPath::try_from(rel.to_string_lossy().into_owned()).map_err(anyhow::Error::msg)
 }
 
 fn display_rel(base: &Path, p: &Path) -> String {

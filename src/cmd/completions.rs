@@ -1,3 +1,4 @@
+use crate::config::SharedPath;
 use crate::git;
 use crate::repo::Repo;
 use anyhow::Result;
@@ -57,8 +58,10 @@ pub fn shareable(repo: &Repo) -> Result<()> {
     )?;
     let already = repo.manifest().unwrap_or_default();
     for line in text.lines() {
-        let path = line.trim_end_matches('/');
-        if !path.is_empty() && !already.contains(path) {
+        // Git gives a directory with `/` at the end. The shared path has none.
+        if let Ok(path) = SharedPath::try_from(line.to_string())
+            && !already.contains(&path)
+        {
             println!("{path}");
         }
     }

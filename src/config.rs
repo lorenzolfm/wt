@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The list of shared paths for one repository.
 ///
@@ -13,19 +13,80 @@ use std::path::PathBuf;
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct RepoConfig {
     #[serde(default)]
-    pub link: Vec<String>,
+    pub link: Vec<SharedPath>,
 }
 
 impl RepoConfig {
-    pub fn contains(&self, entry: &str) -> bool {
-        self.link.iter().any(|e| e == entry)
+    pub fn contains(&self, entry: &SharedPath) -> bool {
+        self.link.contains(entry)
     }
 
-    pub fn insert(&mut self, entry: &str) {
+    pub fn insert(&mut self, entry: &SharedPath) {
         if !self.contains(entry) {
-            self.link.push(entry.to_string());
+            self.link.push(entry.clone());
             self.link.sort();
         }
+    }
+}
+
+/// A shared path: names below the top of the worktree, with `/` between
+/// them.
+///
+/// wt joins the path to the store and to each worktree, and it removes the
+/// file that it finds there. An absolute path gives the same file in the
+/// store and in the worktree. An empty path, `.` and `..` give the worktree
+/// itself or a path outside it. The constructor refuses each of them, so a
+/// person can edit the config file and wt still removes nothing outside the
+/// worktree.
+///
+/// A `/` at the end makes the system follow a link. A correct link to a
+/// directory in the store then looks like a copy of the store, and wt would
+/// remove the store. The path therefore keeps only its names: `.auth/` is
+/// `.auth`.
+///
+/// `try_from` is the only constructor, so each path has this form.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct SharedPath(String);
+
+impl SharedPath {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for SharedPath {
+    type Error = String;
+
+    fn try_from(raw: String) -> Result<Self, Self::Error> {
+        let names: Vec<&str> = raw.split('/').filter(|n| !n.is_empty()).collect();
+        if raw.starts_with('/')
+            || names.is_empty()
+            || names.iter().any(|n| matches!(*n, "." | ".."))
+        {
+            return Err(format!(
+                "{raw:?} is not a path in the worktree. give it from the top of the worktree, with no `.` or `..`"
+            ));
+        }
+        Ok(SharedPath(names.join("/")))
+    }
+}
+
+impl From<SharedPath> for String {
+    fn from(p: SharedPath) -> String {
+        p.0
+    }
+}
+
+impl AsRef<Path> for SharedPath {
+    fn as_ref(&self) -> &Path {
+        Path::new(&self.0)
+    }
+}
+
+impl fmt::Display for SharedPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -219,6 +280,10 @@ impl fmt::Display for RepoKey {
 mod tests {
     use super::*;
 
+    fn path(raw: &str) -> SharedPath {
+        SharedPath::try_from(raw.to_string()).unwrap()
+    }
+
     #[test]
     fn each_url_form_gives_the_same_key() {
         for url in [
@@ -268,6 +333,51 @@ mod tests {
         );
     }
 
+    /// A person can edit the file. wt removes the file at each path, so a
+    /// path that is not below the top of the worktree must not load.
+    #[test]
+    fn a_config_with_a_path_outside_the_worktree_is_refused() {
+        for raw in [
+            "/home/you/project/main/.env",
+            "/",
+            "",
+            ".",
+            "..",
+            "../.env",
+            "./.env",
+            ".auth/.",
+            "a/../.env",
+        ] {
+            let text = format!("[repos.\"github.com/owner/repo\"]\nlink = [{raw:?}]\n");
+
+            let error = toml::from_str::<Config>(&text).unwrap_err().to_string();
+
+            assert!(
+                error.contains(&format!("{raw:?} is not a path in the worktree")),
+                "{error}"
+            );
+        }
+    }
+
+    /// With `/` at the end, the system follows a correct link into the
+    /// store, and the store looks like a copy of itself.
+    #[test]
+    fn a_slash_at_the_end_is_not_part_of_the_path() {
+        let text = "[repos.\"github.com/owner/repo\"]\n\
+                    link = [\".auth/\", \"terraform//vars.tfvars\"]\n";
+
+        let config: Config = toml::from_str(text).unwrap();
+
+        let link = &config
+            .repo(&RepoKey::from_url("github.com/owner/repo"))
+            .unwrap()
+            .link;
+        assert_eq!(
+            link.iter().map(SharedPath::as_str).collect::<Vec<_>>(),
+            [".auth", "terraform/vars.tfvars"]
+        );
+    }
+
     /// An older `wt init` wrote an entry with no path for each repository.
     /// Such an entry is the same as no entry, also in a different case.
     #[test]
@@ -283,7 +393,7 @@ mod tests {
             config
                 .repo(&RepoKey::from_url("github.com/owner/floresta"))
                 .unwrap()
-                .contains(".env")
+                .contains(&path(".env"))
         );
         assert!(
             config
@@ -314,8 +424,8 @@ mod tests {
             toml::from_str("[repos.\"github.com/owner/Floresta\"]\nlink = [\".env\"]\n").unwrap();
         let key = RepoKey::from_url("git@github.com:owner/floresta.git");
 
-        assert!(config.repo(&key).unwrap().contains(".env"));
-        config.repo_mut(&key).insert("data");
+        assert!(config.repo(&key).unwrap().contains(&path(".env")));
+        config.repo_mut(&key).insert(&path("data"));
         let text = toml::to_string(&config).unwrap();
 
         assert_eq!(config.repos.len(), 1);
