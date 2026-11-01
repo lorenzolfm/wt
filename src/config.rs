@@ -331,7 +331,9 @@ fn write_new(
     if let Some(old) = old {
         file.set_permissions(old.permissions())?;
     }
-    Ok(())
+    // The body must be on the disk before the rename. Else a crash of the
+    // system can leave an empty file in the place of the config.
+    file.sync_all()
 }
 
 /// The file at the end of the links from `path`.
