@@ -656,6 +656,24 @@ mod tests {
         toml::from_str("[repos.\"github.com/owner/repo\"]\nlink = [\".env\"]\n").unwrap()
     }
 
+    /// The hook reads the config while a `wt share` can write it. A write
+    /// into the file empties it first, so a reader can get part of a file.
+    #[test]
+    fn a_reader_of_the_old_file_reads_it_whole() {
+        use std::io::Read;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "old").unwrap();
+        let mut reader = std::fs::File::open(&path).unwrap();
+
+        one_path().write_to(&path).unwrap();
+
+        let mut text = String::new();
+        reader.read_to_string(&mut text).unwrap();
+        assert_eq!(text, "old");
+        assert!(std::fs::read_to_string(&path).unwrap().contains(".env"));
+    }
+
     /// The config can be a link into the dotfiles, also before the dotfiles
     /// have the file. The file stays a link, its target gets the new text,
     /// and no temporary file stays.
