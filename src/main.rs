@@ -61,7 +61,6 @@ enum Command {
     ///
     /// The command also follows a rewrite of the upstream branch. It refuses a
     /// move that can lose work.
-    #[command(visible_alias = "f")]
     Follow,
 
     /// Make a worktree for a branch or a pull request
