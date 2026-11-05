@@ -166,6 +166,37 @@ wt ls
 The command prints each worktree, the branch it is on, and how many links are
 correct. It changes nothing.
 
+### Follow the upstream branch
+
+A second look at a pull request needs the commits that the author pushed after
+the first look. `wt add` goes to the worktree that has the branch, and it does
+not change that worktree. The command `wt follow` brings the current worktree to
+its upstream branch:
+
+```sh
+wt follow
+```
+
+The command fetches the upstream branch, and it moves the local branch when the
+move cannot lose work:
+
+- The local branch is behind the upstream branch.
+- The author rewrote the upstream branch, and the local branch is at the
+  remote-tracking ref. The old commits are therefore only the commits of the
+  remote.
+
+The command refuses a worktree with a change that is not committed or with a git
+operation that is not finished, and a branch with commits that the remote does
+not have. It also refuses to overwrite an untracked file or an ignored file. A
+link is an ignored file, so a path that the upstream branch starts to track does
+not replace a link. Files at other paths stay. After a refusal, correct the
+problem and run the command again.
+
+A different fetch, for example `git fetch` or `wt prune`, moves the
+remote-tracking ref. The command then cannot tell your work from the old commits
+of a rewrite, and it refuses the move. The message gives the command that moves
+the branch.
+
 ### Repair the links
 
 The command `git clean -xdf` removes a link. A worktree can also be older than
@@ -263,6 +294,7 @@ link is not in the worktree: when `.auth` is a link to the store,
 | `wt <worktree>` | | The short form of `wt cd <worktree>`. |
 | `wt ls` | `wt l` | Print each worktree, its branch and the condition of its links. |
 | `wt sync` | `wt s` | Compare each worktree with the config. Make the links that are absent. |
+| `wt follow` | | Bring the current worktree to its upstream branch. Refuse a move that can lose work. |
 | `wt delete <worktree>...` | `wt d` | Remove each worktree. Delete its branch if git merged the branch. |
 | `wt prune` | `wt p` | Remove each worktree whose work is finished. Delete its branch. |
 | `wt clone <url> [dir]` | | Clone into the `.bare` layout. Make the first worktree. |

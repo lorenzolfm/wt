@@ -57,6 +57,12 @@ enum Command {
         force: bool,
     },
 
+    /// Bring the current worktree to its upstream branch
+    ///
+    /// The command also follows a rewrite of the upstream branch. It refuses a
+    /// move that can lose work.
+    Follow,
+
     /// Make a worktree for a branch or a pull request
     #[command(visible_alias = "a")]
     Add {
@@ -155,6 +161,10 @@ fn dispatch() -> Result<()> {
     match cli.command {
         Command::ShellInit { shell } => cmd::shell_init::run(&shell),
         Command::Clone { url, dir } => cmd::clone::run(&url, dir.as_deref()),
+        Command::Follow => match at {
+            Some(dir) => cmd::follow::run(dir),
+            None => cmd::follow::run(&std::env::current_dir()?),
+        },
         other => {
             let repo = Repo::discover(at)?;
             match other {
@@ -192,7 +202,9 @@ fn dispatch() -> Result<()> {
                 Command::Worktrees => cmd::completions::worktrees(&repo),
                 Command::Shareable => cmd::completions::shareable(&repo),
                 Command::Bare(words) => cmd::cd::bare(&repo, &words),
-                Command::ShellInit { .. } | Command::Clone { .. } => unreachable!(),
+                Command::ShellInit { .. } | Command::Clone { .. } | Command::Follow => {
+                    unreachable!()
+                }
             }
         }
     }
