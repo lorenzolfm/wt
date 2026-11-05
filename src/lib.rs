@@ -4,6 +4,8 @@
 //! [`repo::Repo::discover`] finds the repository of a directory.
 //! [`cmd::add::run`] makes a worktree in it and returns the worktree. It
 //! prints its progress on stderr and nothing on stdout.
+//! [`cmd::follow::run`] brings a worktree to its upstream branch, in the same
+//! way.
 //!
 //! The post-checkout hook makes the links in a new worktree, and the hook
 //! runs the `wt` binary. A worktree from the library therefore gets its links

@@ -7,6 +7,7 @@ pub mod clone;
 pub mod completions;
 #[expect(clippy::print_stdout, reason = "the path for the shell")]
 pub mod delete;
+pub mod follow;
 pub mod init;
 #[expect(clippy::print_stdout, reason = "the list of the worktrees")]
 pub mod ls;
