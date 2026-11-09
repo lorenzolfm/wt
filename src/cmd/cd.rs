@@ -27,27 +27,29 @@ pub fn run(repo: &Repo, target: &str, fetch: bool) -> Result<()> {
 /// reads an option before the name as an option of wt itself, so the option
 /// goes after the name.
 pub fn bare(repo: &Repo, words: &[String]) -> Result<()> {
-    let (target, fetch) = match words {
-        [target] => (target, false),
-        [target, option] if is_fetch(option) => (target, true),
-        [first, ..] => bail!(
-            "there is no command with the name {first}\n  wt <worktree> is the short form of wt cd <worktree>, and it takes one name and -f"
-        ),
-        [] => unreachable!("clap gives at least one word"),
+    let Some((target, rest)) = words.split_first() else {
+        unreachable!("clap gives at least one word");
     };
-    go(&lookup(repo, target, "command or worktree")?, fetch);
+    let w = lookup(repo, target, "command or worktree")?;
+    let mut fetch = false;
+    for word in rest {
+        match word.as_str() {
+            "-f" | "--fetch" => fetch = true,
+            _ => bail!(
+                "wt <worktree> takes -f or --fetch after the name, and not {word}\n  \
+                 wt <worktree> is the short form of wt cd <worktree>"
+            ),
+        }
+    }
+    go(&w, fetch);
     Ok(())
-}
-
-fn is_fetch(word: &str) -> bool {
-    word == "-f" || word == "--fetch"
 }
 
 /// Print the path of `w`, after the report of its upstream branch when
 /// `fetch` is set.
 fn go(w: &Worktree, fetch: bool) {
-    if fetch && let Err(e) = follow::check(&w.path) {
-        eprintln!("warning: wt cannot tell what is new upstream: {e:#}");
+    if fetch {
+        follow::check(&w.path);
     }
     println!("{}", w.path.display());
 }

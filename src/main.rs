@@ -194,10 +194,8 @@ fn dispatch() -> Result<()> {
                     };
                     let outcome = cmd::add::run(&repo, &branch, dir.as_ref(), mode)?;
                     warn_if_command(outcome.path());
-                    if mode == cmd::add::Fetch::Always
-                        && let Err(e) = cmd::follow::check(outcome.path())
-                    {
-                        eprintln!("warning: wt cannot tell what is new upstream: {e:#}");
+                    if mode == cmd::add::Fetch::Always {
+                        cmd::follow::check(outcome.path());
                     }
                     // The output gives the path to the shell.
                     println!("{}", outcome.path().display());

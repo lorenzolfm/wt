@@ -147,7 +147,10 @@ fn make(
     let dest_str = dest.to_string_lossy().into_owned();
     let remote_ref = b.remote_ref();
 
-    if fetch == Fetch::Always {
+    // A local branch needs no fetch to make the worktree. This fetch moves
+    // the remote-tracking ref also after a rewrite, and then nothing records
+    // the old commits for wt follow. The check after `run` fetches instead.
+    if fetch == Fetch::Always && !has_local(repo, branch) {
         eprintln!("  fetching   {} {}", b.remote, b.upstream);
         fetch_branch(repo, b);
     }
@@ -810,6 +813,34 @@ bbb\trefs/pull/7/head
         assert_eq!(real(&made), real(&tmp.path().join("feature")));
         assert_eq!(real(&found), real(&made));
         assert!(!tmp.path().join("other").exists());
+    }
+
+    /// The remote-tracking ref of a local branch is the record of the old
+    /// commits of a rewrite, and wt follow needs it. A fetch before the
+    /// worktree exists would move the ref, so the command does not fetch.
+    #[test]
+    fn a_fetch_first_keeps_the_record_of_a_rewrite_of_a_local_branch() {
+        let (tmp, repo) = repo();
+        let origin = tmp.path().join("origin");
+        git(&origin, &["switch", "-c", "feature"]);
+        git(&origin, &["commit", "--allow-empty", "-m", "two"]);
+        git(&repo.common, &["fetch", "origin", "feature"]);
+        git(
+            &repo.common,
+            &["branch", "--track", "feature", "origin/feature"],
+        );
+        let tracking = || {
+            crate::git::out(&repo.common, &["rev-parse", "refs/remotes/origin/feature"]).unwrap()
+        };
+        let record = tracking();
+        git(
+            &origin,
+            &["commit", "--amend", "--allow-empty", "-m", "rewritten"],
+        );
+
+        run(&repo, "feature", None, Fetch::Always).unwrap();
+
+        assert_eq!(tracking(), record);
     }
 
     /// A program that uses the library can pass a name that it did not

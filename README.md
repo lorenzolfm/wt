@@ -80,7 +80,9 @@ branch. `git remote prune` deletes each stale ref, but `wt` deletes only these.
 
 Use the option `--no-fetch` to stay offline. Use the option `--fetch` or `-f`
 to do a fetch first. The command then also tells what is new on the upstream
-branch, as `wt cd --fetch` does.
+branch, as `wt cd --fetch` does. A local branch needs no fetch to make the
+worktree, so for a local branch only that report fetches. It keeps the record of
+a rewrite for `wt follow`.
 
 The command refuses a name that `git check-ref-format --branch` refuses, for
 example a name with `-` first or with `:`. Git would read such a name as an
@@ -177,6 +179,11 @@ also shows the new commits. After a rewrite of the upstream branch the ref
 stays: it is the record that `wt follow` needs to move the branch. The command
 then tells you that the history is different.
 
+The command says `run wt follow` only when `wt follow` moves the branch. Both
+commands use the same rule. A commit that the author removed from the upstream
+branch is therefore not your work, and the command tells you that `wt follow`
+removes it.
+
 In the short form the option goes after the name. `wt -f deny` is an option of
 `wt` itself.
 
@@ -224,8 +231,8 @@ problem and run the command again.
 A different fetch, for example `git fetch` or `wt prune`, moves the
 remote-tracking ref. The command then cannot tell your work from the old commits
 of a rewrite, and it refuses the move. The message gives the command that moves
-the branch. `wt cd --fetch` keeps the ref after a rewrite, so it does not stop a
-move.
+the branch. `wt cd --fetch` and `wt add --fetch` keep the ref after a rewrite,
+so they do not stop a move.
 
 ### Repair the links
 
