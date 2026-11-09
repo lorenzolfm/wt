@@ -10,7 +10,7 @@ use wt::repo::Repo;
 #[command(
     name = "wt",
     about = "Git worktrees, plus the files that git ignores",
-    after_help = "wt <worktree> is the short form of wt cd <worktree>.",
+    after_help = "wt <worktree> is the short form of wt cd <worktree>. wt <worktree> -f is the short form of wt cd -f <worktree>.",
     version
 )]
 struct Cli {
@@ -47,7 +47,12 @@ enum Command {
     /// wt <worktree> is the short form. A command wins over a worktree with
     /// the same name, so a worktree named ls needs the long form wt cd ls.
     #[command(visible_alias = "c")]
-    Cd { worktree: String },
+    Cd {
+        worktree: String,
+        /// Fetch the upstream branch and tell what is new there. Change no branch
+        #[arg(short, long)]
+        fetch: bool,
+    },
 
     /// Compare each worktree with the config and make the links
     #[command(visible_alias = "s")]
@@ -71,8 +76,9 @@ enum Command {
         /// The directory name. The default is the branch name with '-' for '/'
         #[arg(value_parser = cmd::add::DirName::parse)]
         dir: Option<cmd::add::DirName>,
-        /// Fetch first, also if the branch is known
-        #[arg(long, conflicts_with = "no_fetch")]
+        /// Fetch first, also if the branch is known. Then tell what is new on
+        /// the upstream branch
+        #[arg(short, long, conflicts_with = "no_fetch")]
         fetch: bool,
         /// Do not use the network
         #[arg(long)]
@@ -171,7 +177,7 @@ fn dispatch() -> Result<()> {
                 Command::Init => cmd::init::run(&repo),
                 Command::Share { paths, force } => cmd::share::run(&repo, &paths, force),
                 Command::Ls => cmd::ls::run(&repo),
-                Command::Cd { worktree } => cmd::cd::run(&repo, &worktree),
+                Command::Cd { worktree, fetch } => cmd::cd::run(&repo, &worktree, fetch),
                 Command::Sync { force } => cmd::sync::run(&repo, force),
                 Command::Add {
                     branch,
@@ -188,6 +194,11 @@ fn dispatch() -> Result<()> {
                     };
                     let outcome = cmd::add::run(&repo, &branch, dir.as_ref(), mode)?;
                     warn_if_command(outcome.path());
+                    if mode == cmd::add::Fetch::Always
+                        && let Err(e) = cmd::follow::check(outcome.path())
+                    {
+                        eprintln!("warning: wt cannot tell what is new upstream: {e:#}");
+                    }
                     // The output gives the path to the shell.
                     println!("{}", outcome.path().display());
                     Ok(())

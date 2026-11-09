@@ -87,6 +87,159 @@ pub fn run(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Fetch the upstream branch of the worktree at `dir`, and tell what it has
+/// that the local branch does not have. The command changes no branch and no
+/// file, so a change in the worktree does not stop it.
+///
+/// The fetch moves the remote-tracking ref only when the new tip contains the
+/// old one. After a rewrite the ref is the only record of the old commits, and
+/// `run` needs that record to move the branch. The report then names `wt
+/// follow`.
+///
+/// An error means that the command cannot tell. It changed nothing.
+///
+/// The report goes to stderr. The function prints nothing on stdout.
+pub fn check(dir: &Path) -> Result<()> {
+    let news = inspect(dir)?;
+    eprintln!("  upstream   {news}");
+    Ok(())
+}
+
+/// What the upstream branch has, from the view of the local branch.
+#[derive(Debug, PartialEq, Eq)]
+enum News {
+    /// The worktree is on no branch.
+    NoBranch,
+    /// The branch has no upstream branch.
+    NoUpstream { branch: String },
+    Compared {
+        branch: String,
+        /// For example `origin/feat`.
+        upstream: String,
+        /// The commits that only the local branch has.
+        mine: usize,
+        /// The commits that only the upstream branch has.
+        theirs: usize,
+        /// The new tip does not contain the remote-tracking ref, so the
+        /// author rewrote the upstream branch.
+        rewritten: bool,
+    },
+}
+
+impl std::fmt::Display for News {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let commits = |n: usize| match n {
+            1 => "1 commit".to_string(),
+            n => format!("{n} commits"),
+        };
+        match self {
+            News::NoBranch => write!(f, "the worktree has no branch checked out"),
+            News::NoUpstream { branch } => write!(f, "{branch} has no upstream branch"),
+            News::Compared {
+                branch,
+                upstream,
+                mine,
+                theirs,
+                rewritten,
+            } => match (*mine, *theirs) {
+                (0, 0) => write!(f, "{branch} is at {upstream}"),
+                (0, n) => write!(
+                    f,
+                    "{upstream} has {} that {branch} does not have\n  \
+                     run wt follow to bring them here",
+                    commits(n)
+                ),
+                (n, 0) => write!(
+                    f,
+                    "{branch} has {} that {upstream} does not have",
+                    commits(n)
+                ),
+                (_, n) if *rewritten => write!(
+                    f,
+                    "{upstream} has a different history, with {}\n  \
+                     run wt follow to bring it here. it refuses a move that can lose work",
+                    commits(n)
+                ),
+                (m, n) => write!(
+                    f,
+                    "{branch} and {upstream} have diverged: {} here, {} there",
+                    commits(m),
+                    commits(n)
+                ),
+            },
+        }
+    }
+}
+
+/// Fetch the upstream branch and compare it with the local branch.
+fn inspect(dir: &Path) -> Result<News> {
+    let Ok(head) = git::out(dir, &["symbolic-ref", "--quiet", "HEAD"]) else {
+        return Ok(News::NoBranch);
+    };
+    let branch = head
+        .strip_prefix("refs/heads/")
+        .unwrap_or(&head)
+        .to_string();
+    let config = |key: &str| git::out(dir, &["config", "--get", &format!("branch.{branch}.{key}")]);
+    let (Ok(remote), Ok(merge)) = (config("remote"), config("merge")) else {
+        return Ok(News::NoUpstream { branch });
+    };
+    let upstream = match merge.strip_prefix("refs/heads/") {
+        Some(name) => format!("{remote}/{name}"),
+        None => format!("{remote} {merge}"),
+    };
+
+    eprintln!("  fetching   {remote} {merge}");
+    git::out(
+        dir,
+        &["fetch", "--no-tags", "--refmap=", "--", &remote, &merge],
+    )?;
+    let tip = git::out(dir, &["rev-parse", "--verify", "FETCH_HEAD^{commit}"])?;
+    let rewritten = !advance_tracking_ref(dir, &head, &tip)?;
+
+    let counts = git::out(
+        dir,
+        &[
+            "rev-list",
+            "--left-right",
+            "--count",
+            &format!("HEAD...{tip}"),
+        ],
+    )?;
+    let Some((mine, theirs)) = counts.split_once('\t') else {
+        bail!("git rev-list gave {counts}, and not two counts");
+    };
+    Ok(News::Compared {
+        branch,
+        upstream,
+        mine: mine.parse()?,
+        theirs: theirs.parse()?,
+        rewritten,
+    })
+}
+
+/// Move the remote-tracking ref of the branch `head` to `tip` when `tip`
+/// contains the ref, as a usual fetch does. The result is false when the ref
+/// stays because `tip` does not contain it. The ref then keeps the record of
+/// a rewrite for `run`.
+///
+/// An absent ref holds no record, so the function makes it. A branch with no
+/// remote-tracking ref changes nothing, and the result is true.
+fn advance_tracking_ref(dir: &Path, head: &str, tip: &str) -> Result<bool> {
+    let upstream = git::out(dir, &["for-each-ref", "--format=%(upstream)", head])?;
+    if !upstream.starts_with("refs/remotes/") {
+        return Ok(true);
+    }
+    let old = git::out(dir, &["rev-parse", "--verify", "--quiet", &upstream]).unwrap_or_default();
+    if !old.is_empty() && !git::ok(dir, &["merge-base", "--is-ancestor", &old, tip]) {
+        return Ok(false);
+    }
+    // With `old`, git keeps a ref that a different fetch changed. An empty
+    // `old` means that the ref must be absent.
+    git::out(dir, &["update-ref", &upstream, tip, &old])?;
+    Ok(true)
+}
+
 /// Move the remote-tracking ref of the branch `head` to `tip`, so the next
 /// rewrite finds the branch at that ref. A branch that merges from
 /// `refs/pull/N/head` has no such ref, and a local upstream branch is not one.
@@ -218,6 +371,104 @@ mod tests {
     fn says(result: Result<()>, words: &str) {
         let why = format!("{:#}", result.unwrap_err());
         assert!(why.contains(words), "{why}");
+    }
+
+    fn tracking(f: &Fixture) -> String {
+        crate::git::out(&f.bare, &["rev-parse", "refs/remotes/origin/feat"]).unwrap()
+    }
+
+    fn compared(mine: usize, theirs: usize, rewritten: bool) -> News {
+        News::Compared {
+            branch: "feat".into(),
+            upstream: "origin/feat".into(),
+            mine,
+            theirs,
+            rewritten,
+        }
+    }
+
+    #[test]
+    fn a_check_of_a_branch_at_the_upstream_branch_finds_nothing_new() {
+        let f = Fixture::new();
+        assert_eq!(inspect(&f.worktree).unwrap(), compared(0, 0, false));
+    }
+
+    /// The check moves the remote-tracking ref as a usual fetch does, and
+    /// changes no branch and no file.
+    #[test]
+    fn a_check_counts_the_new_commits_and_moves_nothing_but_the_ref() {
+        let f = Fixture::new();
+        let here = f.here();
+        f.write("two");
+        f.pushes("three");
+        let tip = f.pushes("four");
+        assert_eq!(inspect(&f.worktree).unwrap(), compared(0, 2, false));
+        assert_eq!(f.here(), here);
+        assert_eq!(f.read("two"), "mine");
+        assert_eq!(tracking(&f), tip);
+    }
+
+    #[test]
+    fn a_check_counts_the_commits_on_each_side() {
+        let f = Fixture::new();
+        commit(&f.worktree, "mine");
+        assert_eq!(inspect(&f.worktree).unwrap(), compared(1, 0, false));
+        f.pushes("three");
+        assert_eq!(inspect(&f.worktree).unwrap(), compared(1, 1, false));
+    }
+
+    /// The ref is the record of the old commits, so the check keeps it, and
+    /// wt follow can still move the branch after the check.
+    #[test]
+    fn a_check_of_a_rewrite_keeps_the_record_for_wt_follow() {
+        let f = Fixture::new();
+        let before = tracking(&f);
+        let tip = f.rewrites("rewritten");
+        assert_eq!(inspect(&f.worktree).unwrap(), compared(1, 1, true));
+        assert_eq!(tracking(&f), before);
+        f.follow().unwrap();
+        assert_eq!(f.here(), tip);
+    }
+
+    #[test]
+    fn a_check_makes_an_absent_ref() {
+        let f = Fixture::new();
+        let here = f.here();
+        git(&f.bare, &["update-ref", "-d", "refs/remotes/origin/feat"]);
+        assert_eq!(inspect(&f.worktree).unwrap(), compared(0, 0, false));
+        assert_eq!(tracking(&f), here);
+    }
+
+    #[test]
+    fn a_check_without_an_upstream_branch_uses_no_network() {
+        let f = Fixture::new();
+        git(&f.worktree, &["branch", "--unset-upstream"]);
+        let news = inspect(&f.worktree).unwrap();
+        assert_eq!(
+            news,
+            News::NoUpstream {
+                branch: "feat".into()
+            }
+        );
+        git(&f.worktree, &["switch", "--detach"]);
+        assert_eq!(inspect(&f.worktree).unwrap(), News::NoBranch);
+    }
+
+    #[test]
+    fn a_failed_check_changes_nothing() {
+        let f = Fixture::new();
+        let before = tracking(&f);
+        git(&f.remote, &["branch", "-m", "feat", "other"]);
+        says(check(&f.worktree), "refs/heads/feat");
+        assert_eq!(tracking(&f), before);
+    }
+
+    #[test]
+    fn the_report_names_wt_follow_when_it_can_help() {
+        assert!(compared(0, 2, false).to_string().contains("wt follow"));
+        assert!(compared(1, 1, true).to_string().contains("wt follow"));
+        assert!(!compared(1, 1, false).to_string().contains("wt follow"));
+        assert!(compared(0, 1, false).to_string().contains("1 commit that"));
     }
 
     #[test]
