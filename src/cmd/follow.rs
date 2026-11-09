@@ -25,11 +25,6 @@ use std::path::Path;
 ///
 /// The progress goes to stderr. The function prints nothing on stdout.
 pub fn run(dir: &Path) -> Result<()> {
-    let inside = git::out(dir, &["rev-parse", "--is-inside-work-tree"])
-        .with_context(|| format!("there is no git repository at {}", dir.display()))?;
-    if inside != "true" {
-        bail!("{} is not in a worktree", dir.display());
-    }
     let Tracking {
         head,
         branch,
@@ -53,8 +48,7 @@ pub fn run(dir: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let changes = git::out(dir, &["status", "--porcelain", "--untracked-files=no"])?;
-    if !changes.is_empty() {
+    if has_changes(dir)? {
         bail!("the worktree has changes that are not committed");
     }
     if plan == Plan::Refuses {
@@ -123,7 +117,14 @@ struct Tracking {
 }
 
 impl Head {
+    /// The head of the worktree at `dir`. A directory that is not in a
+    /// worktree is an error, also when it is absent.
     fn of(dir: &Path) -> Result<Head> {
+        let inside = git::out(dir, &["rev-parse", "--is-inside-work-tree"])
+            .with_context(|| format!("there is no git repository at {}", dir.display()))?;
+        if inside != "true" {
+            bail!("{} is not in a worktree", dir.display());
+        }
         let Ok(head) = git::out(dir, &["symbolic-ref", "--quiet", "HEAD"]) else {
             return Ok(Head::Detached);
         };
@@ -201,6 +202,18 @@ impl Plan {
             Plan::Refuses
         }
     }
+
+    /// True when `wt follow` moves the branch.
+    fn moves(self) -> bool {
+        matches!(self, Plan::FastForward | Plan::FollowsRewrite)
+    }
+}
+
+/// True when the worktree at `dir` has a change to a tracked file. `run`
+/// refuses to move the branch under such a change.
+fn has_changes(dir: &Path) -> Result<bool> {
+    let changes = git::out(dir, &["status", "--porcelain", "--untracked-files=no"])?;
+    Ok(!changes.is_empty())
 }
 
 /// What the upstream branch has, from the view of the local branch.
@@ -219,6 +232,9 @@ enum News {
         /// The commits that only the upstream branch has.
         theirs: usize,
         plan: Plan,
+        /// The worktree has a change to a tracked file, so `wt follow`
+        /// refuses the move until you commit it.
+        changes: bool,
     },
 }
 
@@ -237,39 +253,54 @@ impl std::fmt::Display for News {
                 mine,
                 theirs,
                 plan,
-            } => match plan {
-                Plan::Stays => write!(f, "{branch} is at {upstream}"),
-                Plan::FastForward => write!(
-                    f,
-                    "{upstream} has {} that {branch} does not have\n  \
-                     run wt follow to bring them here",
-                    commits(*theirs)
-                ),
-                Plan::FollowsRewrite if *theirs == 0 => write!(
-                    f,
-                    "the author removed {} from {upstream}\n  \
-                     run wt follow to remove them here",
-                    commits(*mine)
-                ),
-                Plan::FollowsRewrite => write!(
-                    f,
-                    "{upstream} has a different history, with {} in place of {}\n  \
-                     run wt follow to bring it here",
-                    commits(*theirs),
-                    commits(*mine)
-                ),
-                Plan::Refuses if *theirs == 0 => write!(
-                    f,
-                    "{branch} has {} that {upstream} does not have",
-                    commits(*mine)
-                ),
-                Plan::Refuses => write!(
-                    f,
-                    "{branch} and {upstream} have diverged: {} here, {} there",
-                    commits(*mine),
-                    commits(*theirs)
-                ),
-            },
+                changes,
+            } => {
+                match plan {
+                    Plan::Stays => write!(f, "{branch} is at {upstream}")?,
+                    Plan::FastForward => write!(
+                        f,
+                        "{upstream} has {} that {branch} does not have",
+                        commits(*theirs)
+                    )?,
+                    Plan::FollowsRewrite if *theirs == 0 => {
+                        write!(f, "the author removed {} from {upstream}", commits(*mine))?
+                    }
+                    Plan::FollowsRewrite => write!(
+                        f,
+                        "{upstream} has a different history, with {} in place of {}",
+                        commits(*theirs),
+                        commits(*mine)
+                    )?,
+                    Plan::Refuses if *theirs == 0 => write!(
+                        f,
+                        "{branch} has {} that {upstream} does not have",
+                        commits(*mine)
+                    )?,
+                    Plan::Refuses => write!(
+                        f,
+                        "{branch} and {upstream} have diverged: {} here, {} there",
+                        commits(*mine),
+                        commits(*theirs)
+                    )?,
+                }
+                if !plan.moves() {
+                    return Ok(());
+                }
+                let what = match plan {
+                    Plan::FollowsRewrite if *theirs == 0 => "remove them here",
+                    Plan::FollowsRewrite => "bring it here",
+                    _ => "bring them here",
+                };
+                if *changes {
+                    write!(
+                        f,
+                        "\n  the worktree has changes that are not committed\n  \
+                         commit them, then run wt follow to {what}"
+                    )
+                } else {
+                    write!(f, "\n  run wt follow to {what}")
+                }
+            }
         }
     }
 }
@@ -314,6 +345,7 @@ fn inspect(dir: &Path) -> Result<News> {
         mine: mine.parse()?,
         theirs: theirs.parse()?,
         plan,
+        changes: plan.moves() && has_changes(dir)?,
     })
 }
 
@@ -481,12 +513,22 @@ mod tests {
     }
 
     fn compared(mine: usize, theirs: usize, plan: Plan) -> News {
+        news(mine, theirs, plan, false)
+    }
+
+    /// The same as `compared`, in a worktree with a change to a tracked file.
+    fn changed(mine: usize, theirs: usize, plan: Plan) -> News {
+        news(mine, theirs, plan, true)
+    }
+
+    fn news(mine: usize, theirs: usize, plan: Plan, changes: bool) -> News {
         News::Compared {
             branch: "feat".into(),
             upstream: "origin/feat".into(),
             mine,
             theirs,
             plan,
+            changes,
         }
     }
 
@@ -507,7 +549,7 @@ mod tests {
         let tip = f.pushes("four");
         assert_eq!(
             inspect(&f.worktree).unwrap(),
-            compared(0, 2, Plan::FastForward)
+            changed(0, 2, Plan::FastForward)
         );
         assert_eq!(f.here(), here);
         assert_eq!(f.read("two"), "mine");
@@ -561,6 +603,31 @@ mod tests {
         git(&f.bare, &["fetch", "origin"]);
         assert_eq!(inspect(&f.worktree).unwrap(), compared(1, 1, Plan::Refuses));
         says(f.follow(), "does not have");
+    }
+
+    /// wt follow refuses a move under a change that is not committed, so the
+    /// check tells you to commit it first, and not only to run wt follow.
+    #[test]
+    fn a_check_of_a_worktree_with_changes_names_the_changes() {
+        let f = Fixture::new();
+        f.write("one");
+        f.pushes("three");
+        let news = inspect(&f.worktree).unwrap();
+        assert_eq!(news, changed(0, 1, Plan::FastForward));
+        let report = news.to_string();
+        assert!(
+            report.contains("commit them, then run wt follow"),
+            "{report}"
+        );
+        says(f.follow(), "not committed");
+    }
+
+    /// A worktree whose directory is absent is not a worktree on no branch.
+    #[test]
+    fn a_check_of_an_absent_directory_says_so() {
+        let f = Fixture::new();
+        let absent = f.worktree.with_file_name("absent");
+        says(inspect(&absent).map(drop), "there is no git repository");
     }
 
     #[test]
