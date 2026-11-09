@@ -25,43 +25,33 @@ use std::path::Path;
 ///
 /// The progress goes to stderr. The function prints nothing on stdout.
 pub fn run(dir: &Path) -> Result<()> {
-    let inside = git::out(dir, &["rev-parse", "--is-inside-work-tree"])
-        .with_context(|| format!("there is no git repository at {}", dir.display()))?;
-    if inside != "true" {
-        bail!("{} is not in a worktree", dir.display());
-    }
-    let Ok(head) = git::out(dir, &["symbolic-ref", "--quiet", "HEAD"]) else {
-        bail!("the worktree has no branch checked out");
+    let Tracking {
+        head,
+        branch,
+        remote,
+        merge,
+    } = match Head::of(dir)? {
+        Head::Detached => bail!("the worktree has no branch checked out"),
+        Head::Untracked { branch } => bail!(
+            "{branch} has no upstream branch\n  run git branch --set-upstream-to to give it one"
+        ),
+        Head::Tracking(t) => t,
     };
-    let branch = head.strip_prefix("refs/heads/").unwrap_or(&head);
-    let config = |key: &str| git::out(dir, &["config", "--get", &format!("branch.{branch}.{key}")]);
-    let (Ok(remote), Ok(merge)) = (config("remote"), config("merge")) else {
-        bail!("{branch} has no upstream branch\n  run git branch --set-upstream-to to give it one");
-    };
+    let branch = branch.as_str();
 
-    // The remote-tracking ref is the only record of the old commits of a
-    // rewrite. With an empty refmap the fetch does not move it, so a refusal
-    // keeps the record for the next run.
-    let before = git::out(dir, &["rev-parse", "--verify", "--quiet", "@{upstream}"]).ok();
-    eprintln!("  fetching   {remote} {merge}");
-    git::out(
-        dir,
-        &["fetch", "--no-tags", "--refmap=", "--", &remote, &merge],
-    )?;
-    let tip = git::out(dir, &["rev-parse", "--verify", "FETCH_HEAD^{commit}"])?;
+    let Fetched { before, tip } = fetch(dir, &remote, &merge)?;
     let here = git::out(dir, &["rev-parse", "--verify", "HEAD"])?;
-    if here == tip {
+    let plan = Plan::of(dir, &here, before.as_deref(), &tip);
+    if plan == Plan::Stays {
         move_tracking_ref(dir, &head, &tip)?;
         eprintln!("  upstream   {branch} is at {merge}");
         return Ok(());
     }
 
-    let changes = git::out(dir, &["status", "--porcelain", "--untracked-files=no"])?;
-    if !changes.is_empty() {
+    if has_changes(dir)? {
         bail!("the worktree has changes that are not committed");
     }
-    let behind = git::ok(dir, &["merge-base", "--is-ancestor", &here, &tip]);
-    if !behind && before.as_deref() != Some(here.as_str()) {
+    if plan == Plan::Refuses {
         bail!(
             "{branch} has commits that {remote} {merge} does not have\n  \
              wt cannot tell your work from the old commits of a rewrite\n  \
@@ -84,6 +74,304 @@ pub fn run(dir: &Path) -> Result<()> {
     )?;
     move_tracking_ref(dir, &head, &tip)?;
     eprintln!("  moved      {branch} from {here} to {tip}");
+    Ok(())
+}
+
+/// Fetch the upstream branch of the worktree at `dir`, and tell what it has
+/// that the local branch does not have, and what `wt follow` does with it. The
+/// command changes no branch and no file, so a change in the worktree does not
+/// stop it.
+///
+/// The fetch moves the remote-tracking ref only when the new tip contains the
+/// old one. After a rewrite the ref is the only record of the old commits, and
+/// `run` needs that record to move the branch.
+///
+/// A failure is a warning, and the function changed nothing. The report and
+/// the warning go to stderr. The function prints nothing on stdout.
+pub fn check(dir: &Path) {
+    match inspect(dir) {
+        Ok(news) => eprintln!("  upstream   {news}"),
+        Err(e) => eprintln!("warning: wt cannot tell what is new upstream: {e:#}"),
+    }
+}
+
+/// The branch of a worktree, and its upstream branch from the git config.
+enum Head {
+    /// The worktree is on no branch.
+    Detached,
+    /// The branch has no upstream branch.
+    Untracked {
+        branch: String,
+    },
+    Tracking(Tracking),
+}
+
+struct Tracking {
+    /// For example `refs/heads/feat`.
+    head: String,
+    /// For example `feat`.
+    branch: String,
+    remote: String,
+    /// The branch on the remote, for example `refs/heads/feat`.
+    merge: String,
+}
+
+impl Head {
+    /// The head of the worktree at `dir`. A directory that is not in a
+    /// worktree is an error, also when it is absent.
+    fn of(dir: &Path) -> Result<Head> {
+        let inside = git::out(dir, &["rev-parse", "--is-inside-work-tree"])
+            .with_context(|| format!("there is no git repository at {}", dir.display()))?;
+        if inside != "true" {
+            bail!("{} is not in a worktree", dir.display());
+        }
+        let Ok(head) = git::out(dir, &["symbolic-ref", "--quiet", "HEAD"]) else {
+            return Ok(Head::Detached);
+        };
+        let Some(branch) = head.strip_prefix("refs/heads/") else {
+            bail!("HEAD is at {head}, and not at a branch");
+        };
+        let branch = branch.to_string();
+        let config =
+            |key: &str| git::out(dir, &["config", "--get", &format!("branch.{branch}.{key}")]);
+        let (Ok(remote), Ok(merge)) = (config("remote"), config("merge")) else {
+            return Ok(Head::Untracked { branch });
+        };
+        Ok(Head::Tracking(Tracking {
+            head,
+            branch,
+            remote,
+            merge,
+        }))
+    }
+}
+
+/// The result of a fetch of the upstream branch.
+struct Fetched {
+    /// The remote-tracking ref before the fetch. It is absent for a branch
+    /// with no such ref, and for a ref that is not there.
+    before: Option<String>,
+    /// The commit that the remote has now.
+    tip: String,
+}
+
+/// Fetch `merge` from `remote`. The fetch moves no ref.
+///
+/// The remote-tracking ref is the only record of the old commits of a
+/// rewrite. With an empty refmap the fetch does not move it, so a refusal
+/// keeps the record for the next run.
+fn fetch(dir: &Path, remote: &str, merge: &str) -> Result<Fetched> {
+    let before = git::out(dir, &["rev-parse", "--verify", "--quiet", "@{upstream}"]).ok();
+    eprintln!("  fetching   {remote} {merge}");
+    git::out(
+        dir,
+        &["fetch", "--no-tags", "--refmap=", "--", remote, merge],
+    )?;
+    let tip = git::out(dir, &["rev-parse", "--verify", "FETCH_HEAD^{commit}"])?;
+    Ok(Fetched { before, tip })
+}
+
+/// What `wt follow` does with the branch. `run` acts on it, and `check`
+/// tells it, so the report and the command cannot disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Plan {
+    /// The branch is at the upstream branch.
+    Stays,
+    /// The branch is behind the upstream branch.
+    FastForward,
+    /// The upstream branch has a different history, and the branch is at
+    /// the remote-tracking ref. The old commits are therefore only the
+    /// commits of the remote.
+    FollowsRewrite,
+    /// The branch has commits that the upstream branch does not have, and
+    /// wt cannot tell them from the old commits of a rewrite.
+    Refuses,
+}
+
+impl Plan {
+    /// The plan for the branch at `here`, with the remote-tracking ref at
+    /// `before` and the upstream branch at `tip`.
+    fn of(dir: &Path, here: &str, before: Option<&str>, tip: &str) -> Plan {
+        if here == tip {
+            Plan::Stays
+        } else if git::ok(dir, &["merge-base", "--is-ancestor", here, tip]) {
+            Plan::FastForward
+        } else if before == Some(here) {
+            Plan::FollowsRewrite
+        } else {
+            Plan::Refuses
+        }
+    }
+
+    /// True when `wt follow` moves the branch.
+    fn moves(self) -> bool {
+        matches!(self, Plan::FastForward | Plan::FollowsRewrite)
+    }
+}
+
+/// True when the worktree at `dir` has a change to a tracked file. `run`
+/// refuses to move the branch under such a change.
+fn has_changes(dir: &Path) -> Result<bool> {
+    let changes = git::out(dir, &["status", "--porcelain", "--untracked-files=no"])?;
+    Ok(!changes.is_empty())
+}
+
+/// What the upstream branch has, from the view of the local branch.
+#[derive(Debug, PartialEq, Eq)]
+enum News {
+    /// The worktree is on no branch.
+    NoBranch,
+    /// The branch has no upstream branch.
+    NoUpstream { branch: String },
+    Compared {
+        branch: String,
+        /// For example `origin/feat`.
+        upstream: String,
+        /// The commits that only the local branch has.
+        mine: usize,
+        /// The commits that only the upstream branch has.
+        theirs: usize,
+        plan: Plan,
+        /// The worktree has a change to a tracked file, so `wt follow`
+        /// refuses the move until you commit it.
+        changes: bool,
+    },
+}
+
+impl std::fmt::Display for News {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let commits = |n: usize| match n {
+            1 => "1 commit".to_string(),
+            n => format!("{n} commits"),
+        };
+        match self {
+            News::NoBranch => write!(f, "the worktree has no branch checked out"),
+            News::NoUpstream { branch } => write!(f, "{branch} has no upstream branch"),
+            News::Compared {
+                branch,
+                upstream,
+                mine,
+                theirs,
+                plan,
+                changes,
+            } => {
+                match plan {
+                    Plan::Stays => write!(f, "{branch} is at {upstream}")?,
+                    Plan::FastForward => write!(
+                        f,
+                        "{upstream} has {} that {branch} does not have",
+                        commits(*theirs)
+                    )?,
+                    Plan::FollowsRewrite if *theirs == 0 => {
+                        write!(f, "the author removed {} from {upstream}", commits(*mine))?
+                    }
+                    Plan::FollowsRewrite => write!(
+                        f,
+                        "{upstream} has a different history, with {} in place of {}",
+                        commits(*theirs),
+                        commits(*mine)
+                    )?,
+                    Plan::Refuses if *theirs == 0 => write!(
+                        f,
+                        "{branch} has {} that {upstream} does not have",
+                        commits(*mine)
+                    )?,
+                    Plan::Refuses => write!(
+                        f,
+                        "{branch} and {upstream} have diverged: {} here, {} there",
+                        commits(*mine),
+                        commits(*theirs)
+                    )?,
+                }
+                if !plan.moves() {
+                    return Ok(());
+                }
+                let what = match plan {
+                    Plan::FollowsRewrite if *theirs == 0 => "remove them here",
+                    Plan::FollowsRewrite => "bring it here",
+                    _ => "bring them here",
+                };
+                if *changes {
+                    write!(
+                        f,
+                        "\n  the worktree has changes that are not committed\n  \
+                         commit them, then run wt follow to {what}"
+                    )
+                } else {
+                    write!(f, "\n  run wt follow to {what}")
+                }
+            }
+        }
+    }
+}
+
+/// Fetch the upstream branch and compare it with the local branch.
+fn inspect(dir: &Path) -> Result<News> {
+    let Tracking {
+        head,
+        branch,
+        remote,
+        merge,
+    } = match Head::of(dir)? {
+        Head::Detached => return Ok(News::NoBranch),
+        Head::Untracked { branch } => return Ok(News::NoUpstream { branch }),
+        Head::Tracking(t) => t,
+    };
+    let upstream = match merge.strip_prefix("refs/heads/") {
+        Some(name) => format!("{remote}/{name}"),
+        None => format!("{remote} {merge}"),
+    };
+
+    let Fetched { before, tip } = fetch(dir, &remote, &merge)?;
+    let here = git::out(dir, &["rev-parse", "--verify", "HEAD"])?;
+    let plan = Plan::of(dir, &here, before.as_deref(), &tip);
+    advance_tracking_ref(dir, &head, &tip)?;
+
+    let counts = git::out(
+        dir,
+        &[
+            "rev-list",
+            "--left-right",
+            "--count",
+            &format!("{here}...{tip}"),
+        ],
+    )?;
+    let Some((mine, theirs)) = counts.split_once('\t') else {
+        bail!("git rev-list gave {counts}, and not two counts");
+    };
+    Ok(News::Compared {
+        branch,
+        upstream,
+        mine: mine.parse()?,
+        theirs: theirs.parse()?,
+        plan,
+        changes: plan.moves() && has_changes(dir)?,
+    })
+}
+
+/// Move the remote-tracking ref of the branch `head` to `tip` when `tip`
+/// contains the ref, as a usual fetch does. The ref stays when `tip` does not
+/// contain it, and then it keeps the record of a rewrite for `run`.
+///
+/// An absent ref holds no record, so the function makes it. A branch with no
+/// remote-tracking ref changes nothing.
+fn advance_tracking_ref(dir: &Path, head: &str, tip: &str) -> Result<()> {
+    let upstream = git::out(dir, &["for-each-ref", "--format=%(upstream)", head])?;
+    if !upstream.starts_with("refs/remotes/") {
+        return Ok(());
+    }
+    let old = git::out(dir, &["rev-parse", "--verify", "--quiet", &upstream]).ok();
+    if let Some(old) = &old
+        && !git::ok(dir, &["merge-base", "--is-ancestor", old, tip])
+    {
+        return Ok(());
+    }
+    // With `old`, git keeps a ref that a different fetch changed. For git an
+    // empty old value means that the ref must be absent.
+    git::out(
+        dir,
+        &["update-ref", &upstream, tip, old.as_deref().unwrap_or("")],
+    )?;
     Ok(())
 }
 
@@ -218,6 +506,172 @@ mod tests {
     fn says(result: Result<()>, words: &str) {
         let why = format!("{:#}", result.unwrap_err());
         assert!(why.contains(words), "{why}");
+    }
+
+    fn tracking(f: &Fixture) -> String {
+        crate::git::out(&f.bare, &["rev-parse", "refs/remotes/origin/feat"]).unwrap()
+    }
+
+    fn compared(mine: usize, theirs: usize, plan: Plan) -> News {
+        news(mine, theirs, plan, false)
+    }
+
+    /// The same as `compared`, in a worktree with a change to a tracked file.
+    fn changed(mine: usize, theirs: usize, plan: Plan) -> News {
+        news(mine, theirs, plan, true)
+    }
+
+    fn news(mine: usize, theirs: usize, plan: Plan, changes: bool) -> News {
+        News::Compared {
+            branch: "feat".into(),
+            upstream: "origin/feat".into(),
+            mine,
+            theirs,
+            plan,
+            changes,
+        }
+    }
+
+    #[test]
+    fn a_check_of_a_branch_at_the_upstream_branch_finds_nothing_new() {
+        let f = Fixture::new();
+        assert_eq!(inspect(&f.worktree).unwrap(), compared(0, 0, Plan::Stays));
+    }
+
+    /// The check moves the remote-tracking ref as a usual fetch does, and
+    /// changes no branch and no file.
+    #[test]
+    fn a_check_counts_the_new_commits_and_moves_nothing_but_the_ref() {
+        let f = Fixture::new();
+        let here = f.here();
+        f.write("two");
+        f.pushes("three");
+        let tip = f.pushes("four");
+        assert_eq!(
+            inspect(&f.worktree).unwrap(),
+            changed(0, 2, Plan::FastForward)
+        );
+        assert_eq!(f.here(), here);
+        assert_eq!(f.read("two"), "mine");
+        assert_eq!(tracking(&f), tip);
+    }
+
+    #[test]
+    fn a_check_counts_the_commits_on_each_side() {
+        let f = Fixture::new();
+        commit(&f.worktree, "mine");
+        assert_eq!(inspect(&f.worktree).unwrap(), compared(1, 0, Plan::Refuses));
+        f.pushes("three");
+        assert_eq!(inspect(&f.worktree).unwrap(), compared(1, 1, Plan::Refuses));
+    }
+
+    /// The ref is the record of the old commits, so the check keeps it, and
+    /// wt follow can still move the branch after the check.
+    #[test]
+    fn a_check_of_a_rewrite_keeps_the_record_for_wt_follow() {
+        let f = Fixture::new();
+        let before = tracking(&f);
+        let tip = f.rewrites("rewritten");
+        assert_eq!(
+            inspect(&f.worktree).unwrap(),
+            compared(1, 1, Plan::FollowsRewrite)
+        );
+        assert_eq!(tracking(&f), before);
+        f.follow().unwrap();
+        assert_eq!(f.here(), tip);
+    }
+
+    /// The author removes the last commit. The commit is of the remote, not
+    /// of the user, so the check names wt follow, and wt follow removes it.
+    #[test]
+    fn a_check_of_a_removed_commit_names_wt_follow() {
+        let f = Fixture::new();
+        git(&f.remote, &["reset", "--hard", "HEAD~1"]);
+        let tip = tip(&f.remote);
+        let news = inspect(&f.worktree).unwrap();
+        assert_eq!(news, compared(1, 0, Plan::FollowsRewrite));
+        assert!(news.to_string().contains("wt follow"), "{news}");
+        f.follow().unwrap();
+        assert_eq!(f.here(), tip);
+    }
+
+    /// A check after a different fetch finds no record, as wt follow does.
+    #[test]
+    fn a_check_of_a_rewrite_that_a_different_fetch_saw_first_names_no_move() {
+        let f = Fixture::new();
+        f.rewrites("rewritten");
+        git(&f.bare, &["fetch", "origin"]);
+        assert_eq!(inspect(&f.worktree).unwrap(), compared(1, 1, Plan::Refuses));
+        says(f.follow(), "does not have");
+    }
+
+    /// wt follow refuses a move under a change that is not committed, so the
+    /// check tells you to commit it first, and not only to run wt follow.
+    #[test]
+    fn a_check_of_a_worktree_with_changes_names_the_changes() {
+        let f = Fixture::new();
+        f.write("one");
+        f.pushes("three");
+        let news = inspect(&f.worktree).unwrap();
+        assert_eq!(news, changed(0, 1, Plan::FastForward));
+        let report = news.to_string();
+        assert!(
+            report.contains("commit them, then run wt follow"),
+            "{report}"
+        );
+        says(f.follow(), "not committed");
+    }
+
+    /// A worktree whose directory is absent is not a worktree on no branch.
+    #[test]
+    fn a_check_of_an_absent_directory_says_so() {
+        let f = Fixture::new();
+        let absent = f.worktree.with_file_name("absent");
+        says(inspect(&absent).map(drop), "there is no git repository");
+    }
+
+    #[test]
+    fn a_check_makes_an_absent_ref() {
+        let f = Fixture::new();
+        let here = f.here();
+        git(&f.bare, &["update-ref", "-d", "refs/remotes/origin/feat"]);
+        assert_eq!(inspect(&f.worktree).unwrap(), compared(0, 0, Plan::Stays));
+        assert_eq!(tracking(&f), here);
+    }
+
+    #[test]
+    fn a_check_without_an_upstream_branch_uses_no_network() {
+        let f = Fixture::new();
+        git(&f.worktree, &["branch", "--unset-upstream"]);
+        let news = inspect(&f.worktree).unwrap();
+        assert_eq!(
+            news,
+            News::NoUpstream {
+                branch: "feat".into()
+            }
+        );
+        git(&f.worktree, &["switch", "--detach"]);
+        assert_eq!(inspect(&f.worktree).unwrap(), News::NoBranch);
+    }
+
+    #[test]
+    fn a_failed_check_changes_nothing() {
+        let f = Fixture::new();
+        let before = tracking(&f);
+        git(&f.remote, &["branch", "-m", "feat", "other"]);
+        says(inspect(&f.worktree).map(drop), "refs/heads/feat");
+        assert_eq!(tracking(&f), before);
+    }
+
+    #[test]
+    fn the_report_names_wt_follow_when_wt_follow_moves_the_branch() {
+        let report = |plan| compared(1, 1, plan).to_string();
+        assert!(report(Plan::FastForward).contains("wt follow"));
+        assert!(report(Plan::FollowsRewrite).contains("wt follow"));
+        assert!(!report(Plan::Refuses).contains("wt follow"));
+        assert!(!report(Plan::Stays).contains("wt follow"));
+        let one = compared(0, 1, Plan::FastForward).to_string();
+        assert!(one.contains("1 commit that"), "{one}");
     }
 
     #[test]

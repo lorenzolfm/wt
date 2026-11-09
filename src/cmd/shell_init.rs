@@ -66,6 +66,9 @@ complete -c wt -n __fish_use_subcommand -a '(command wt __worktrees 2>/dev/null)
 complete -c wt -n '__fish_seen_subcommand_from add a'      -a '(command wt __branches 2>/dev/null)'
 complete -c wt -n '__fish_seen_subcommand_from delete d'   -a '(command wt __worktrees 2>/dev/null)'
 complete -c wt -n '__fish_seen_subcommand_from cd c'       -a '(command wt __worktrees 2>/dev/null)'
+complete -c wt -n '__fish_seen_subcommand_from cd c'       -s f -l fetch -d 'fetch the upstream branch and tell what is new'
+complete -c wt -n '__fish_seen_subcommand_from add a'      -s f -l fetch -d 'fetch first, then tell what is new upstream'
+complete -c wt -n '__fish_seen_subcommand_from add a'      -l no-fetch   -d 'do not use the network'
 
 # `complete -c wt -f` above stops file completion for the whole command, so
 # each subcommand that takes a path must ask for it again with -F.

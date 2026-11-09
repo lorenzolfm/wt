@@ -78,8 +78,11 @@ stays until a prune, and each fetch of `security/waf` fails. Before a fetch,
 `wt` deletes each ref that blocks the branch, if origin no longer has its
 branch. `git remote prune` deletes each stale ref, but `wt` deletes only these.
 
-Use the option `--no-fetch` to stay offline. Use the option `--fetch` to do a
-fetch first.
+Use the option `--no-fetch` to stay offline. Use the option `--fetch` or `-f`
+to do a fetch first. The command then also tells what is new on the upstream
+branch, as `wt cd --fetch` does. For a local branch that tracks its remote
+branch, only that report fetches, so it keeps the record of a rewrite for `wt
+follow`. `wt` still deletes each ref that blocks the branch.
 
 The command refuses a name that `git check-ref-format --branch` refuses, for
 example a name with `-` first or with `:`. Git would read such a name as an
@@ -151,6 +154,41 @@ of the worktree directory. Both also accept the name of the branch, because a
 branch can move after you make the worktree. The start of a directory name is
 sufficient when only one worktree matches.
 
+Use the option `--fetch` or `-f` to see the work that is new upstream:
+
+```sh
+wt cd -f deny
+wt deny -f
+```
+
+The command fetches the upstream branch of the worktree, and it tells what each
+side has:
+
+```
+  fetching   origin refs/heads/deny
+  upstream   origin/deny has 2 commits that deny does not have
+  run wt follow to bring them here
+```
+
+The command changes no branch and no file. Use `wt follow` to bring the commits
+into the worktree. When the fetch fails, for example with no network, the
+command prints a warning and goes to the worktree.
+
+The fetch moves the remote-tracking ref, as `git fetch` does, so `git status`
+also shows the new commits. After a rewrite of the upstream branch the ref
+stays: it is the record that `wt follow` needs to move the branch. The command
+then tells you that the history is different.
+
+The command says `run wt follow` only when `wt follow` moves the branch. Both
+commands use the same rule. A commit that the author removed from the upstream
+branch is therefore not your work, and the command tells you that `wt follow`
+removes it. When the worktree has changes that are not committed, the command
+tells you to commit them first, because `wt follow` refuses the move until
+then.
+
+In the short form the option goes after the name. `wt -f deny` is an option of
+`wt` itself.
+
 A command wins over a worktree with the same name, and a short form such as
 `wt d` is a command. `wt ls` therefore prints the worktrees, also when a
 worktree has the name `ls`. The long form `wt cd ls` goes to that worktree,
@@ -195,7 +233,8 @@ problem and run the command again.
 A different fetch, for example `git fetch` or `wt prune`, moves the
 remote-tracking ref. The command then cannot tell your work from the old commits
 of a rewrite, and it refuses the move. The message gives the command that moves
-the branch.
+the branch. `wt cd --fetch` and `wt add --fetch` keep the ref after a rewrite,
+so they do not stop a move.
 
 ### Repair the links
 
@@ -290,8 +329,8 @@ link is not in the worktree: when `.auth` is a link to the store,
 | `wt init` | | Make the store and the hook. Move no files. |
 | `wt share <path>…` | `wt sh` | Move ignored paths into the store. Link them in each worktree. |
 | `wt add <branch> [dir]` | `wt a` | Make a worktree for a branch or for the link to a pull request. |
-| `wt cd <worktree>` | `wt c` | Print the path of a worktree. The shell integration then changes directory. |
-| `wt <worktree>` | | The short form of `wt cd <worktree>`. |
+| `wt cd <worktree>` | `wt c` | Print the path of a worktree. The shell integration then changes directory. With `-f`, tell what is new upstream. |
+| `wt <worktree>` | | The short form of `wt cd <worktree>`. `wt <worktree> -f` is the short form of `wt cd -f <worktree>`. |
 | `wt ls` | `wt l` | Print each worktree, its branch and the condition of its links. |
 | `wt sync` | `wt s` | Compare each worktree with the config. Make the links that are absent. |
 | `wt follow` | | Bring the current worktree to its upstream branch. Refuse a move that can lose work. |

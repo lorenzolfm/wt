@@ -147,9 +147,18 @@ fn make(
     let dest_str = dest.to_string_lossy().into_owned();
     let remote_ref = b.remote_ref();
 
+    // This fetch moves the remote-tracking ref also after a rewrite. When a
+    // local branch tracks the ref, the ref is the record of the old commits
+    // for wt follow, so the check after `run` fetches instead. A ref that
+    // blocks the ref is not the record, and it goes, so the check can make
+    // an absent ref.
     if fetch == Fetch::Always {
-        eprintln!("  fetching   {} {}", b.remote, b.upstream);
-        fetch_branch(repo, b);
+        if tracks(repo, branch, &remote_ref) {
+            prune_blockers(repo, b);
+        } else {
+            eprintln!("  fetching   {} {}", b.remote, b.upstream);
+            fetch_branch(repo, b);
+        }
     }
 
     let args: Vec<String> = if has_local(repo, branch) {
@@ -655,6 +664,13 @@ fn has_local(repo: &Repo, branch: &str) -> bool {
     )
 }
 
+/// True when the local branch `branch` is present, and its upstream branch
+/// is `remote_ref`, for example `origin/eng-1234`.
+fn tracks(repo: &Repo, branch: &str, remote_ref: &str) -> bool {
+    has_local(repo, branch)
+        && repo.upstream(branch).as_deref() == Some(&format!("refs/remotes/{remote_ref}"))
+}
+
 fn has_remote(repo: &Repo, remote_ref: &str) -> bool {
     git::ok(
         &repo.common,
@@ -810,6 +826,87 @@ bbb\trefs/pull/7/head
         assert_eq!(real(&made), real(&tmp.path().join("feature")));
         assert_eq!(real(&found), real(&made));
         assert!(!tmp.path().join("other").exists());
+    }
+
+    /// The remote-tracking ref of a local branch is the record of the old
+    /// commits of a rewrite, and wt follow needs it. A fetch before the
+    /// worktree exists would move the ref, so the command does not fetch.
+    #[test]
+    fn a_fetch_first_keeps_the_record_of_a_rewrite_of_a_local_branch() {
+        let (tmp, repo) = repo();
+        let origin = tmp.path().join("origin");
+        git(&origin, &["switch", "-c", "feature"]);
+        git(&origin, &["commit", "--allow-empty", "-m", "two"]);
+        git(&repo.common, &["fetch", "origin", "feature"]);
+        git(
+            &repo.common,
+            &["branch", "--track", "feature", "origin/feature"],
+        );
+        let tracking = || {
+            crate::git::out(&repo.common, &["rev-parse", "refs/remotes/origin/feature"]).unwrap()
+        };
+        let record = tracking();
+        git(
+            &origin,
+            &["commit", "--amend", "--allow-empty", "-m", "rewritten"],
+        );
+
+        run(&repo, "feature", None, Fetch::Always).unwrap();
+
+        assert_eq!(tracking(), record);
+    }
+
+    /// A ref that blocks the ref of a local branch is not the record, so
+    /// the command deletes it also without the fetch. The check can then
+    /// make the absent ref, and `wt prune` does not read the branch as gone.
+    #[test]
+    fn a_fetch_first_deletes_a_ref_that_blocks_a_local_branch() {
+        let (tmp, repo) = repo();
+        let origin = tmp.path().join("origin");
+        git(&origin, &["branch", "security"]);
+        git(&repo.common, &["fetch", "origin", "security"]);
+        git(&origin, &["branch", "-D", "security"]);
+        git(&origin, &["branch", "security/waf"]);
+        git(&repo.common, &["branch", "security/waf", "origin/master"]);
+        git(
+            &repo.common,
+            &["config", "branch.security/waf.remote", "origin"],
+        );
+        git(
+            &repo.common,
+            &[
+                "config",
+                "branch.security/waf.merge",
+                "refs/heads/security/waf",
+            ],
+        );
+
+        run(&repo, "security/waf", None, Fetch::Always).unwrap();
+
+        assert!(!has_remote(&repo, "origin/security"));
+    }
+
+    /// A local branch with no upstream branch has no record to keep, for
+    /// example a branch from the bare clone of `wt clone`. The command
+    /// fetches its branch on origin, as for a remote branch.
+    #[test]
+    fn a_fetch_first_fetches_the_branch_of_a_local_branch_with_no_upstream() {
+        let (tmp, repo) = repo();
+        let origin = tmp.path().join("origin");
+        git(&origin, &["switch", "-c", "feature"]);
+        git(&repo.common, &["fetch", "origin", "feature"]);
+        git(
+            &repo.common,
+            &["branch", "--no-track", "feature", "origin/feature"],
+        );
+        git(&origin, &["commit", "--allow-empty", "-m", "two"]);
+
+        run(&repo, "feature", None, Fetch::Always).unwrap();
+
+        assert_eq!(
+            crate::git::out(&repo.common, &["rev-parse", "refs/remotes/origin/feature"]).unwrap(),
+            commit(&origin)
+        );
     }
 
     /// A program that uses the library can pass a name that it did not
