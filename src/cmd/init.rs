@@ -46,9 +46,7 @@ mod tests {
     fn bare() -> (TempDir, Repo) {
         let tmp = TempDir::new().unwrap();
         git(tmp.path(), &["init", "--bare", "-b", "main", "repo.git"]);
-        let repo = Repo {
-            common: tmp.path().join("repo.git"),
-        };
+        let repo = Repo::at(tmp.path().join("repo.git"));
         (tmp, repo)
     }
 
