@@ -39,6 +39,7 @@ pub fn run(dir: &Path) -> Result<()> {
     };
     let branch = branch.as_str();
 
+    eprintln!("  fetching   {remote} {merge}");
     let Fetched { before, tip } = fetch(dir, &remote, &merge)?;
     let here = git::out(dir, &["rev-parse", "--verify", "HEAD"])?;
     let plan = Plan::of(dir, &here, before.as_deref(), &tip);
@@ -93,6 +94,27 @@ pub fn check(dir: &Path) {
         Ok(news) => eprintln!("  upstream   {news}"),
         Err(e) => eprintln!("warning: wt cannot tell what is new upstream: {e:#}"),
     }
+}
+
+/// Fetch the upstream branch of the worktree at `dir`, and move the
+/// remote-tracking ref as `check` moves it: only when the new tip contains the
+/// old one, so the record of a rewrite stays for `run`. The function changes
+/// no branch and no file, and it prints nothing.
+///
+/// A worktree on no branch, or on a branch with no upstream branch, has
+/// nothing to fetch, and the function uses no network for it.
+pub fn fetch_upstream(dir: &Path) -> Result<()> {
+    let Head::Tracking(Tracking {
+        head,
+        remote,
+        merge,
+        ..
+    }) = Head::of(dir)?
+    else {
+        return Ok(());
+    };
+    let Fetched { tip, .. } = fetch(dir, &remote, &merge)?;
+    advance_tracking_ref(dir, &head, &tip)
 }
 
 /// The branch of a worktree, and its upstream branch from the git config.
@@ -162,7 +184,6 @@ struct Fetched {
 /// keeps the record for the next run.
 fn fetch(dir: &Path, remote: &str, merge: &str) -> Result<Fetched> {
     let before = git::out(dir, &["rev-parse", "--verify", "--quiet", "@{upstream}"]).ok();
-    eprintln!("  fetching   {remote} {merge}");
     git::out(
         dir,
         &["fetch", "--no-tags", "--refmap=", "--", remote, merge],
@@ -322,6 +343,7 @@ fn inspect(dir: &Path) -> Result<News> {
         None => format!("{remote} {merge}"),
     };
 
+    eprintln!("  fetching   {remote} {merge}");
     let Fetched { before, tip } = fetch(dir, &remote, &merge)?;
     let here = git::out(dir, &["rev-parse", "--verify", "HEAD"])?;
     let plan = Plan::of(dir, &here, before.as_deref(), &tip);
@@ -661,6 +683,50 @@ mod tests {
         git(&f.remote, &["branch", "-m", "feat", "other"]);
         says(inspect(&f.worktree).map(drop), "refs/heads/feat");
         assert_eq!(tracking(&f), before);
+    }
+
+    /// The fetch moves the remote-tracking ref, and changes no branch and no
+    /// file.
+    #[test]
+    fn a_fetch_of_the_upstream_branch_moves_nothing_but_the_ref() {
+        let f = Fixture::new();
+        let here = f.here();
+        f.write("two");
+        f.pushes("three");
+        let tip = f.pushes("four");
+        fetch_upstream(&f.worktree).unwrap();
+        assert_eq!(tracking(&f), tip);
+        assert_eq!(f.here(), here);
+        assert_eq!(f.read("two"), "mine");
+    }
+
+    /// The fetch keeps the record of a rewrite, as the check does, so wt
+    /// follow can still move the branch after it.
+    #[test]
+    fn a_fetch_of_a_rewrite_keeps_the_record_for_wt_follow() {
+        let f = Fixture::new();
+        let before = tracking(&f);
+        let tip = f.rewrites("rewritten");
+        fetch_upstream(&f.worktree).unwrap();
+        assert_eq!(tracking(&f), before);
+        f.follow().unwrap();
+        assert_eq!(f.here(), tip);
+    }
+
+    /// A remote that is gone fails the fetch, which then changes nothing. A
+    /// branch with no upstream branch, and a detached worktree, have nothing
+    /// to fetch.
+    #[test]
+    fn a_fetch_without_an_upstream_branch_uses_no_network() {
+        let f = Fixture::new();
+        let before = tracking(&f);
+        fs::remove_dir_all(&f.remote).unwrap();
+        says(fetch_upstream(&f.worktree), "git fetch");
+        assert_eq!(tracking(&f), before);
+        git(&f.worktree, &["branch", "--unset-upstream"]);
+        fetch_upstream(&f.worktree).unwrap();
+        git(&f.worktree, &["switch", "--detach"]);
+        fetch_upstream(&f.worktree).unwrap();
     }
 
     #[test]
