@@ -2,27 +2,39 @@
 //! as an option, also after a positional argument. A name from the caller or
 //! from GitHub can start with '-', so it goes after `--`.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
 /// Run git in `dir` and return its output. An error contains the stderr of git.
 pub fn out(dir: &Path, args: &[&str]) -> Result<String> {
-    let o = Command::new("git")
+    let o = output(dir, args)?;
+    if !o.status.success() {
+        return Err(failure(args, &o));
+    }
+    Ok(String::from_utf8_lossy(&o.stdout).trim_end().to_string())
+}
+
+/// Run git in `dir` and return what it did, also when it fails. Use this
+/// function for a command that tells a result by its exit code.
+pub fn output(dir: &Path, args: &[&str]) -> Result<Output> {
+    Command::new("git")
         .arg("-C")
         .arg(dir)
         .args(args)
         .output()
-        .with_context(|| format!("wt cannot run `git {}`", args.join(" ")))?;
-    if !o.status.success() {
-        bail!(
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&o.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&o.stdout).trim_end().to_string())
+        .with_context(|| format!("wt cannot run `git {}`", args.join(" ")))
+}
+
+/// The error for git `args` that failed with `o`. It contains the stderr of
+/// git.
+pub fn failure(args: &[&str], o: &Output) -> anyhow::Error {
+    anyhow!(
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&o.stderr).trim()
+    )
 }
 
 /// Run git and return only the result. Discard the output.

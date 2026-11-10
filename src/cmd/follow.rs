@@ -96,25 +96,102 @@ pub fn check(dir: &Path) {
     }
 }
 
-/// Fetch the upstream branch of the worktree at `dir`, and move the
-/// remote-tracking ref as `check` moves it: only when the new tip contains the
-/// old one, so the record of a rewrite stays for `run`. The function changes
-/// no branch and no file, and it prints nothing.
+/// What `fetch_upstream` found of the upstream branch of a branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Upstream {
+    /// The branch has no upstream branch with a remote-tracking ref, so the
+    /// function fetched nothing. A local upstream branch and a branch that
+    /// merges from `refs/pull/N/head` are such branches.
+    Untracked,
+    /// The remote-tracking ref is at the upstream branch.
+    Current,
+    /// The fetch moved the remote-tracking ref to the upstream branch, or made
+    /// the ref.
+    Advanced,
+    /// The upstream branch has a different history. The remote-tracking ref
+    /// stays, as the record of the old commits for `run`.
+    Rewritten,
+    /// The remote has no such branch.
+    Gone,
+}
+
+/// Fetch the upstream branch of `branch`, for the repository at `dir`, and
+/// move its remote-tracking ref as `check` moves it: only when the new tip
+/// contains the old one, so the record of a rewrite stays for `run`. The
+/// function changes no branch and no file, writes no `FETCH_HEAD`, and prints
+/// nothing.
 ///
-/// A worktree on no branch, or on a branch with no upstream branch, has
-/// nothing to fetch, and the function uses no network for it.
-pub fn fetch_upstream(dir: &Path) -> Result<()> {
-    let Head::Tracking(Tracking {
-        head,
-        remote,
-        merge,
-        ..
-    }) = Head::of(dir)?
-    else {
-        return Ok(());
+/// The function asks the remote for the tip first, and fetches only when the
+/// ref is not at it. git moves the ref in the fetch, and refuses a move that
+/// is not a fast-forward, so a different fetch cannot change the tip that it
+/// writes.
+pub fn fetch_upstream(dir: &Path, branch: &str) -> Result<Upstream> {
+    let config = |key: &str| git::out(dir, &["config", "--get", &format!("branch.{branch}.{key}")]);
+    let (Ok(remote), Ok(merge)) = (config("remote"), config("merge")) else {
+        return Ok(Upstream::Untracked);
     };
-    let Fetched { tip, .. } = fetch(dir, &remote, &merge)?;
-    advance_tracking_ref(dir, &head, &tip)
+    let head = format!("refs/heads/{branch}");
+    let tracking = git::out(dir, &["for-each-ref", "--format=%(upstream)", &head])?;
+    if !tracking.starts_with("refs/remotes/") {
+        return Ok(Upstream::Untracked);
+    }
+    let Some(tip) = remote_tip(dir, &remote, &merge)? else {
+        return Ok(Upstream::Gone);
+    };
+    let old = git::out(dir, &["rev-parse", "--verify", "--quiet", &tracking]).ok();
+    if old.as_deref() == Some(tip.as_str()) {
+        return Ok(Upstream::Current);
+    }
+    fetch_into(dir, &remote, &merge, &tracking)
+}
+
+/// The commit of `merge` on `remote`, or none when the remote has no such
+/// ref.
+fn remote_tip(dir: &Path, remote: &str, merge: &str) -> Result<Option<String>> {
+    let args = ["ls-remote", "--exit-code", "--", remote, merge];
+    let o = git::output(dir, &args)?;
+    if o.status.code() == Some(2) {
+        return Ok(None);
+    }
+    if !o.status.success() {
+        return Err(git::failure(&args, &o));
+    }
+    let listed = String::from_utf8_lossy(&o.stdout);
+    Ok(listed.lines().find_map(|line| {
+        let (tip, name) = line.split_once('\t')?;
+        (name == merge).then(|| tip.to_string())
+    }))
+}
+
+/// Fetch `merge` from `remote` into the remote-tracking ref `tracking`. The
+/// refspec has no `+`, so git moves the ref only by a fast-forward, and the
+/// empty refmap keeps the refspecs of the config from forcing it.
+fn fetch_into(dir: &Path, remote: &str, merge: &str, tracking: &str) -> Result<Upstream> {
+    let refspec = format!("{merge}:{tracking}");
+    let args = [
+        "fetch",
+        "--porcelain",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "--refmap=",
+        "--",
+        remote,
+        &refspec,
+    ];
+    let o = git::output(dir, &args)?;
+    let said = String::from_utf8_lossy(&o.stdout);
+    let flag = said.lines().find_map(|line| {
+        let mut chars = line.chars();
+        let flag = chars.next()?;
+        let (_, name) = chars.as_str().rsplit_once(' ')?;
+        (name == tracking).then_some(flag)
+    });
+    match (o.status.success(), flag) {
+        (true, Some(' ' | '*')) => Ok(Upstream::Advanced),
+        (true, None | Some('=')) => Ok(Upstream::Current),
+        (false, Some('!')) => Ok(Upstream::Rewritten),
+        _ => Err(git::failure(&args, &o)),
+    }
 }
 
 /// The branch of a worktree, and its upstream branch from the git config.
@@ -685,19 +762,26 @@ mod tests {
         assert_eq!(tracking(&f), before);
     }
 
-    /// The fetch moves the remote-tracking ref, and changes no branch and no
-    /// file.
+    /// The fetch moves the remote-tracking ref, and changes no branch, no file
+    /// and no `FETCH_HEAD`. The next fetch finds the ref at the tip.
     #[test]
     fn a_fetch_of_the_upstream_branch_moves_nothing_but_the_ref() {
         let f = Fixture::new();
         let here = f.here();
+        git(&f.worktree, &["fetch", "origin", "feat"]);
+        let fetch_head = crate::git::out(&f.worktree, &["rev-parse", "FETCH_HEAD"]).unwrap();
         f.write("two");
         f.pushes("three");
         let tip = f.pushes("four");
-        fetch_upstream(&f.worktree).unwrap();
+        let fetched = fetch_upstream(&f.worktree, "feat").unwrap();
+        assert_eq!(fetched, Upstream::Advanced);
         assert_eq!(tracking(&f), tip);
         assert_eq!(f.here(), here);
         assert_eq!(f.read("two"), "mine");
+        let now = crate::git::out(&f.worktree, &["rev-parse", "FETCH_HEAD"]).unwrap();
+        assert_eq!(now, fetch_head);
+        let fetched = fetch_upstream(&f.worktree, "feat").unwrap();
+        assert_eq!(fetched, Upstream::Current);
     }
 
     /// The fetch keeps the record of a rewrite, as the check does, so wt
@@ -707,26 +791,44 @@ mod tests {
         let f = Fixture::new();
         let before = tracking(&f);
         let tip = f.rewrites("rewritten");
-        fetch_upstream(&f.worktree).unwrap();
+        let fetched = fetch_upstream(&f.worktree, "feat").unwrap();
+        assert_eq!(fetched, Upstream::Rewritten);
         assert_eq!(tracking(&f), before);
         f.follow().unwrap();
         assert_eq!(f.here(), tip);
     }
 
+    /// A branch that the remote deleted is gone, and its ref stays.
+    #[test]
+    fn a_fetch_of_a_deleted_branch_finds_it_gone() {
+        let f = Fixture::new();
+        let before = tracking(&f);
+        git(&f.remote, &["branch", "-m", "feat", "other"]);
+        let fetched = fetch_upstream(&f.worktree, "feat").unwrap();
+        assert_eq!(fetched, Upstream::Gone);
+        assert_eq!(tracking(&f), before);
+    }
+
     /// A remote that is gone fails the fetch, which then changes nothing. A
-    /// branch with no upstream branch, and a detached worktree, have nothing
-    /// to fetch.
+    /// branch that merges from a pull request ref, and a branch with no
+    /// upstream branch, have nothing to fetch.
     #[test]
     fn a_fetch_without_an_upstream_branch_uses_no_network() {
         let f = Fixture::new();
         let before = tracking(&f);
         fs::remove_dir_all(&f.remote).unwrap();
-        says(fetch_upstream(&f.worktree), "git fetch");
+        let failed = fetch_upstream(&f.worktree, "feat").map(|_| ());
+        says(failed, "git ls-remote");
         assert_eq!(tracking(&f), before);
+        git(
+            &f.worktree,
+            &["config", "branch.feat.merge", "refs/pull/7/head"],
+        );
+        let fetched = fetch_upstream(&f.worktree, "feat").unwrap();
+        assert_eq!(fetched, Upstream::Untracked);
         git(&f.worktree, &["branch", "--unset-upstream"]);
-        fetch_upstream(&f.worktree).unwrap();
-        git(&f.worktree, &["switch", "--detach"]);
-        fetch_upstream(&f.worktree).unwrap();
+        let fetched = fetch_upstream(&f.worktree, "feat").unwrap();
+        assert_eq!(fetched, Upstream::Untracked);
     }
 
     #[test]
