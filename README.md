@@ -223,9 +223,9 @@ The command fetches the upstream branch, and it moves the local branch when the
 move cannot lose work:
 
 - The local branch is behind the upstream branch.
-- The author rewrote the upstream branch, and the local branch is at the
-  remote-tracking ref. The old commits are therefore only the commits of the
-  remote.
+- The author rewrote the upstream branch, and the remote-tracking ref has each
+  commit of the local branch. The old commits are therefore only the commits of
+  the remote.
 
 The command refuses a worktree with a change that is not committed or with a git
 operation that is not finished, and a branch with commits that the remote does
@@ -235,10 +235,11 @@ not replace a link. Files at other paths stay. After a refusal, correct the
 problem and run the command again.
 
 A different fetch, for example `git fetch` or `wt prune`, moves the
-remote-tracking ref. The command then cannot tell your work from the old commits
-of a rewrite, and it refuses the move. The message gives the command that moves
-the branch. `wt cd --fetch` and `wt add --fetch` keep the ref after a rewrite,
-so they do not stop a move.
+remote-tracking ref to the rewrite. The command then cannot tell your work from
+the old commits, and it refuses the move. The message gives the command that
+moves the branch. A fetch that moves the ref only by a fast-forward keeps the
+record. `wt cd --fetch` and `wt add --fetch` keep the ref after a rewrite, so
+they do not stop a move.
 
 ### Repair the links
 
