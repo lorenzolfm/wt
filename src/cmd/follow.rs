@@ -128,15 +128,14 @@ pub enum Upstream {
 /// is not a fast-forward, so a different fetch cannot change the tip that it
 /// writes.
 pub fn fetch_upstream(dir: &Path, branch: &str) -> Result<Upstream> {
-    let config = |key: &str| git::out(dir, &["config", "--get", &format!("branch.{branch}.{key}")]);
-    let (Ok(remote), Ok(merge)) = (config("remote"), config("merge")) else {
+    let Some(UpstreamRef {
+        tracking,
+        remote,
+        merge,
+    }) = upstream_ref(dir, branch)?
+    else {
         return Ok(Upstream::Untracked);
     };
-    let head = format!("refs/heads/{branch}");
-    let tracking = git::out(dir, &["for-each-ref", "--format=%(upstream)", &head])?;
-    if !tracking.starts_with("refs/remotes/") {
-        return Ok(Upstream::Untracked);
-    }
     let Some(tip) = remote_tip(dir, &remote, &merge)? else {
         return Ok(Upstream::Gone);
     };
@@ -145,6 +144,48 @@ pub fn fetch_upstream(dir: &Path, branch: &str) -> Result<Upstream> {
         return Ok(Upstream::Current);
     }
     fetch_into(dir, &remote, &merge, &tracking)
+}
+
+/// The upstream branch of a branch, with its remote-tracking ref.
+struct UpstreamRef {
+    /// For example `refs/remotes/origin/feat`.
+    tracking: String,
+    remote: String,
+    /// The branch on the remote, for example `refs/heads/feat`.
+    merge: String,
+}
+
+/// The upstream branch of `branch`, or none when it has no remote-tracking
+/// ref.
+///
+/// git gives the three names from the same entry of the config. The config
+/// can have more than one `branch.<b>.merge`: `git config --get` reads the
+/// last, and `%(upstream)` the first, so the two can name different branches.
+fn upstream_ref(dir: &Path, branch: &str) -> Result<Option<UpstreamRef>> {
+    let head = format!("refs/heads/{branch}");
+    let format =
+        "--format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref)";
+    let listed = git::out(dir, &["for-each-ref", format, &head])?;
+    // The pattern also matches the branches under `refs/heads/<b>/`.
+    let Some(fields) = listed
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{head}\0")))
+    else {
+        return Ok(None);
+    };
+    let mut fields = fields.split('\0');
+    let (Some(tracking), Some(remote), Some(merge)) = (fields.next(), fields.next(), fields.next())
+    else {
+        bail!("git for-each-ref gave {listed:?}, and not four fields");
+    };
+    if !tracking.starts_with("refs/remotes/") || remote.is_empty() || merge.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(UpstreamRef {
+        tracking: tracking.to_string(),
+        remote: remote.to_string(),
+        merge: merge.to_string(),
+    }))
 }
 
 /// The commit of `merge` on `remote`, or none when the remote has no such
@@ -168,6 +209,10 @@ fn remote_tip(dir: &Path, remote: &str, merge: &str) -> Result<Option<String>> {
 /// Fetch `merge` from `remote` into the remote-tracking ref `tracking`. The
 /// refspec has no `+`, so git moves the ref only by a fast-forward, and the
 /// empty refmap keeps the refspecs of the config from forcing it.
+///
+/// git marks each ref that it did not update with `!`: a move that is not a
+/// fast-forward, and also a ref that it cannot lock. Only the first is a
+/// rewrite, so the function asks git which it is.
 fn fetch_into(dir: &Path, remote: &str, merge: &str, tracking: &str) -> Result<Upstream> {
     let refspec = format!("{merge}:{tracking}");
     let args = [
@@ -182,18 +227,27 @@ fn fetch_into(dir: &Path, remote: &str, merge: &str, tracking: &str) -> Result<U
     ];
     let o = git::output(dir, &args)?;
     let said = String::from_utf8_lossy(&o.stdout);
-    let flag = said.lines().find_map(|line| {
+    // A line is `<flag> <old> <new> <ref>`.
+    let line = said.lines().find_map(|line| {
         let mut chars = line.chars();
         let flag = chars.next()?;
-        let (_, name) = chars.as_str().rsplit_once(' ')?;
-        (name == tracking).then_some(flag)
+        let mut words = chars.as_str().split(' ').skip(1);
+        let (old, new, name) = (words.next()?, words.next()?, words.next()?);
+        (name == tracking).then_some((flag, old, new))
     });
-    match (o.status.success(), flag) {
-        (true, Some(' ' | '*')) => Ok(Upstream::Advanced),
-        (true, None | Some('=')) => Ok(Upstream::Current),
-        (false, Some('!')) => Ok(Upstream::Rewritten),
+    match (o.status.success(), line) {
+        (true, Some((' ' | '*', _, _))) => Ok(Upstream::Advanced),
+        (true, None | Some(('=', _, _))) => Ok(Upstream::Current),
+        (false, Some(('!', old, new))) if diverged(dir, old, new) => Ok(Upstream::Rewritten),
         _ => Err(git::failure(&args, &o)),
     }
+}
+
+/// True only when git says that the commit `new` does not contain the commit
+/// `old`. An absent commit, as the zero id of an absent ref, is not an answer.
+fn diverged(dir: &Path, old: &str, new: &str) -> bool {
+    git::output(dir, &["merge-base", "--is-ancestor", old, new])
+        .is_ok_and(|o| o.status.code() == Some(1))
 }
 
 /// The branch of a worktree, and its upstream branch from the git config.
@@ -828,9 +882,41 @@ mod tests {
         assert_eq!(tracking(&f), before);
     }
 
+    /// git marks a ref that it cannot lock as it marks a rewrite. A
+    /// fast-forward that git cannot write is a failure, and not a rewrite.
+    #[test]
+    fn a_ref_that_git_cannot_lock_fails_the_fetch() {
+        let f = Fixture::new();
+        let before = tracking(&f);
+        f.pushes("three");
+        fs::write(f.bare.join("refs/remotes/origin/feat.lock"), "").unwrap();
+        let failed = fetch_upstream(&f.worktree, "feat").map(|_| ());
+        says(failed, "cannot lock ref");
+        assert_eq!(tracking(&f), before);
+    }
+
+    /// With two `branch.<b>.merge`, the fetch is of the upstream branch that
+    /// git status compares, the first, and it does not write the commits of
+    /// the second into the ref of the first.
+    #[test]
+    fn a_fetch_reads_the_upstream_branch_that_git_reads() {
+        let f = Fixture::new();
+        let before = tracking(&f);
+        f.pushes("three");
+        git(&f.remote, &["branch", "other"]);
+        git(&f.remote, &["reset", "--hard", "HEAD~1"]);
+        git(
+            &f.worktree,
+            &["config", "--add", "branch.feat.merge", "refs/heads/other"],
+        );
+        let fetched = fetch_upstream(&f.worktree, "feat").unwrap();
+        assert_eq!(fetched, Upstream::Current);
+        assert_eq!(tracking(&f), before);
+    }
+
     /// A remote that is gone fails the fetch, which then changes nothing. A
-    /// branch that merges from a pull request ref, and a branch with no
-    /// upstream branch, have nothing to fetch.
+    /// branch that merges from a pull request ref, a branch with no upstream
+    /// branch, and a name with only branches under it, have nothing to fetch.
     #[test]
     fn a_fetch_without_an_upstream_branch_uses_no_network() {
         let f = Fixture::new();
@@ -839,6 +925,9 @@ mod tests {
         let failed = fetch_upstream(&f.worktree, "feat").map(|_| ());
         says(failed, "git ls-remote");
         assert_eq!(tracking(&f), before);
+        git(&f.worktree, &["branch", "--track", "side/x", "origin/feat"]);
+        let fetched = fetch_upstream(&f.worktree, "side").unwrap();
+        assert_eq!(fetched, Upstream::Untracked);
         git(
             &f.worktree,
             &["config", "branch.feat.merge", "refs/pull/7/head"],
