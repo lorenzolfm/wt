@@ -10,10 +10,12 @@ use std::path::Path;
 /// the move cannot lose work:
 ///
 /// - The branch is behind the upstream branch.
-/// - The upstream branch has a different history, and the local branch is at
-///   the remote-tracking ref. The old commits are therefore only the commits
-///   of the remote. A different fetch moves that ref, and the command then
-///   refuses the move, because it cannot tell them from new work.
+/// - The upstream branch has a different history, and the remote-tracking ref
+///   has each commit of the local branch. The old commits are therefore only
+///   the commits of the remote. A different fetch that moves that ref to the
+///   rewrite removes this record, and the command then refuses the move,
+///   because it cannot tell them from new work. A fast-forward of the ref, as
+///   `fetch_upstream` makes, keeps the record.
 ///
 /// The command refuses a worktree with a change that is not committed or with
 /// a git operation that is not finished, and a branch with commits that the
@@ -277,9 +279,9 @@ enum Plan {
     Stays,
     /// The branch is behind the upstream branch.
     FastForward,
-    /// The upstream branch has a different history, and the branch is at
-    /// the remote-tracking ref. The old commits are therefore only the
-    /// commits of the remote.
+    /// The upstream branch has a different history, and the remote-tracking
+    /// ref has each commit of the branch. The old commits are therefore only
+    /// the commits of the remote.
     FollowsRewrite,
     /// The branch has commits that the upstream branch does not have, and
     /// wt cannot tell them from the old commits of a rewrite.
@@ -294,7 +296,9 @@ impl Plan {
             Plan::Stays
         } else if git::ok(dir, &["merge-base", "--is-ancestor", here, tip]) {
             Plan::FastForward
-        } else if before == Some(here) {
+        } else if before.is_some_and(|before| {
+            before == here || git::ok(dir, &["merge-base", "--is-ancestor", here, before])
+        }) {
             Plan::FollowsRewrite
         } else {
             Plan::Refuses
@@ -794,6 +798,21 @@ mod tests {
         let fetched = fetch_upstream(&f.worktree, "feat").unwrap();
         assert_eq!(fetched, Upstream::Rewritten);
         assert_eq!(tracking(&f), before);
+        f.follow().unwrap();
+        assert_eq!(f.here(), tip);
+    }
+
+    /// The fetch of a fast-forward moves the ref past the branch. The ref
+    /// still has each commit of the branch, so wt follow still moves the
+    /// branch to a later rewrite.
+    #[test]
+    fn a_rewrite_after_a_fetch_of_a_fast_forward_moves_the_branch() {
+        let f = Fixture::new();
+        f.pushes("three");
+        let fetched = fetch_upstream(&f.worktree, "feat").unwrap();
+        assert_eq!(fetched, Upstream::Advanced);
+        git(&f.remote, &["reset", "--hard", "HEAD~2"]);
+        let tip = f.pushes("rewritten");
         f.follow().unwrap();
         assert_eq!(f.here(), tip);
     }
