@@ -3,7 +3,9 @@
 //!
 //! [`repo::Repo::discover`] finds the repository of a directory.
 //! [`cmd::add::run`] makes a worktree in it and returns the worktree. It
-//! prints its progress on stderr and nothing on stdout.
+//! prints its progress on stderr and nothing on stdout. [`cmd::add::plan`]
+//! and [`cmd::add::make`] are its two steps, so a program can look at the
+//! branch and the directory before the worktree is made.
 //! [`cmd::follow::run`] brings a worktree to its upstream branch, in the same
 //! way.
 //!
