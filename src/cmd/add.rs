@@ -67,7 +67,7 @@ impl Outcome {
 ///
 /// The progress goes to stderr. The function prints nothing on stdout.
 pub fn run(repo: &Repo, branch: &str, dir: Option<&DirName>, fetch: Fetch) -> Result<Outcome> {
-    make(repo, &plan(repo, branch, dir, fetch)?, fetch)
+    make(repo, &plan(repo, branch, dir, fetch)?)
 }
 
 /// The branch that `wt add` gives a worktree, and the directory that it
@@ -77,6 +77,7 @@ pub struct Plan {
     branch: Branch,
     link: bool,
     dest: PathBuf,
+    fetch: Fetch,
 }
 
 impl Plan {
@@ -96,7 +97,8 @@ impl Plan {
 /// Find the branch for `branch` and the directory of its new worktree, as
 /// [`run`] does first. The function makes no worktree and no branch. For the
 /// link to a pull request it asks the network for the branch, and it can add
-/// the remote of a fork.
+/// the remote of a fork. The plan keeps `fetch`, so [`make`] uses the
+/// network as this function did.
 pub fn plan(repo: &Repo, branch: &str, dir: Option<&DirName>, fetch: Fetch) -> Result<Plan> {
     // The function finds a branch with the network, and it can add a remote.
     // A repository with no container refuses before each of them.
@@ -123,6 +125,7 @@ pub fn plan(repo: &Repo, branch: &str, dir: Option<&DirName>, fetch: Fetch) -> R
         branch: b,
         link,
         dest,
+        fetch,
     })
 }
 
@@ -156,13 +159,14 @@ impl Branch {
 /// Make the worktree of `plan`, or find the worktree that has its branch.
 /// For a link, the remote branch must be present: the command does not make
 /// a new branch for a pull request.
-pub fn make(repo: &Repo, plan: &Plan, fetch: Fetch) -> Result<Outcome> {
+pub fn make(repo: &Repo, plan: &Plan) -> Result<Outcome> {
     let Plan {
         branch: b,
         link,
         dest,
+        fetch,
     } = plan;
-    let (branch, link) = (&b.name, *link);
+    let (branch, link, fetch) = (&b.name, *link, *fetch);
 
     // A local branch can track a different branch, for example master when
     // it started from origin/master. `git push` then refuses to push it.
@@ -841,14 +845,19 @@ bbb\trefs/pull/7/head
     }
 
     /// The plan that `plan` gives for `b`, for a test that finds no branch.
-    fn planned(repo: &Repo, b: &Branch, link: bool) -> Plan {
+    fn planned(repo: &Repo, b: &Branch, link: bool, fetch: Fetch) -> Plan {
         let dest = repo.container().unwrap().join(b.name.replace('/', "-"));
         let branch = Branch {
             name: b.name.clone(),
             remote: b.remote.clone(),
             upstream: b.upstream.clone(),
         };
-        Plan { branch, link, dest }
+        Plan {
+            branch,
+            link,
+            dest,
+            fetch,
+        }
     }
 
     fn commit(dir: &Path) -> String {
@@ -892,7 +901,7 @@ bbb\trefs/pull/7/head
         assert_eq!(real(plan.dest().parent().unwrap()), real(tmp.path()));
         assert!(!plan.dest().exists());
         assert!(!has_local(&repo, "lorenzo/eng-1234"));
-        let Outcome::Made(made) = make(&repo, &plan, Fetch::Never).unwrap() else {
+        let Outcome::Made(made) = make(&repo, &plan).unwrap() else {
             panic!("no worktree has the branch, so make must make one");
         };
         assert_eq!(made, plan.dest());
@@ -1079,8 +1088,7 @@ bbb\trefs/pull/7/head
 
             make(
                 &repo,
-                &planned(&repo, &Branch::on_origin(new), true),
-                Fetch::Lazy,
+                &planned(&repo, &Branch::on_origin(new), true, Fetch::Lazy),
             )
             .unwrap();
 
@@ -1102,8 +1110,12 @@ bbb\trefs/pull/7/head
 
         make(
             &repo,
-            &planned(&repo, &Branch::on_origin("security/waf"), false),
-            Fetch::Lazy,
+            &planned(
+                &repo,
+                &Branch::on_origin("security/waf"),
+                false,
+                Fetch::Lazy,
+            ),
         )
         .unwrap();
 
@@ -1126,8 +1138,7 @@ bbb\trefs/pull/7/head
 
         make(
             &repo,
-            &planned(&repo, &Branch::on_origin("HEAD/x"), false),
-            Fetch::Lazy,
+            &planned(&repo, &Branch::on_origin("HEAD/x"), false, Fetch::Lazy),
         )
         .unwrap();
 
@@ -1160,8 +1171,7 @@ bbb\trefs/pull/7/head
 
         make(
             &repo,
-            &planned(&repo, &Branch::on_origin("pr"), false),
-            Fetch::Lazy,
+            &planned(&repo, &Branch::on_origin("pr"), false, Fetch::Lazy),
         )
         .unwrap();
 
@@ -1194,7 +1204,7 @@ bbb\trefs/pull/7/head
         let head = fork(&tmp, "fix/keysets");
 
         let b = fork_branch(&repo, &head).unwrap();
-        make(&repo, &planned(&repo, &b, true), Fetch::Lazy).unwrap();
+        make(&repo, &planned(&repo, &b, true, Fetch::Lazy)).unwrap();
 
         assert_eq!(
             repo.upstream("fix/keysets").as_deref(),
@@ -1218,7 +1228,7 @@ bbb\trefs/pull/7/head
         let head = fork(&tmp, "master");
 
         let b = fork_branch(&repo, &head).unwrap();
-        make(&repo, &planned(&repo, &b, true), Fetch::Lazy).unwrap();
+        make(&repo, &planned(&repo, &b, true, Fetch::Lazy)).unwrap();
 
         assert_eq!(
             repo.upstream("alice-master").as_deref(),
@@ -1279,7 +1289,7 @@ bbb\trefs/pull/7/head
         let (tmp, repo) = repo();
         let head = fork(&tmp, "feature");
         let b = fork_branch(&repo, &head).unwrap();
-        make(&repo, &planned(&repo, &b, true), Fetch::Lazy).unwrap();
+        make(&repo, &planned(&repo, &b, true, Fetch::Lazy)).unwrap();
         git(&repo.common, &["remote", "add", "aaa", &head.https_url]);
 
         assert_eq!(fork_branch(&repo, &head).unwrap(), b);
@@ -1296,7 +1306,7 @@ bbb\trefs/pull/7/head
 
         let b = fork_branch(&repo, &head).unwrap();
 
-        assert!(make(&repo, &planned(&repo, &b, true), Fetch::Lazy).is_err());
+        assert!(make(&repo, &planned(&repo, &b, true, Fetch::Lazy)).is_err());
         assert!(!has_local(&repo, "absent"));
         assert!(!tmp.path().join("absent").exists());
     }
