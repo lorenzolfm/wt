@@ -10,7 +10,13 @@ use std::fs;
 pub fn run(repo: &Repo) -> Result<()> {
     // The hook and each command find the shared paths by the URL of origin.
     repo.key()?;
+    install(repo)
+}
 
+/// Make the store and the hook, also in a repository with no origin. `wt
+/// new` makes such a repository. The hook makes no link there, and `wt
+/// share` refuses until the user adds origin.
+pub(crate) fn install(repo: &Repo) -> Result<()> {
     let mut changed = false;
 
     let (target, hook_changed) = hook::install(repo)?;

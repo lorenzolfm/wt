@@ -153,6 +153,12 @@ fn seed_here() -> Result<()> {
     if !repo.is_managed() {
         return Ok(());
     }
+    // The config finds the shared paths by the URL of origin. A repository
+    // from `wt new` has no origin until the user adds it, and it has no
+    // shared path until then. Each new worktree must not print an error.
+    if !repo.has_origin() {
+        return Ok(());
+    }
     let manifest = repo.manifest()?;
     if manifest.link.is_empty() {
         return Ok(());

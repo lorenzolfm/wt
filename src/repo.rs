@@ -111,6 +111,12 @@ impl Repo {
         Ok(RepoKey::from_url(&url))
     }
 
+    /// Whether the repository has a remote named origin. The key comes from
+    /// its URL.
+    pub(crate) fn has_origin(&self) -> bool {
+        git::ok(&self.common, &["remote", "get-url", "origin"])
+    }
+
     /// Whether `wt init` made the store of this repository. The config does
     /// not tell: a repository with no shared path has no entry in it.
     pub fn is_managed(&self) -> bool {
