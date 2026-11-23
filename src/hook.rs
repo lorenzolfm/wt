@@ -153,6 +153,8 @@ fn seed_here() -> Result<()> {
     if !repo.is_managed() {
         return Ok(());
     }
+    // A repository from `wt new` has no origin until the user adds it, and
+    // its manifest is empty until then.
     let manifest = repo.manifest()?;
     if manifest.link.is_empty() {
         return Ok(());

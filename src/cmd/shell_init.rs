@@ -3,7 +3,8 @@ use anyhow::{Result, bail};
 /// Print the shell integration.
 ///
 /// A program cannot change the directory of the shell that started it. The
-/// commands `add`, `clone`, `cd` and `delete` therefore print the new path.
+/// commands `add`, `clone`, `new`, `cd` and `delete` therefore print the new
+/// path.
 /// The function below reads that path and changes the directory. The program
 /// makes this shell code. Do not write it manually.
 pub fn run(shell: &str) -> Result<()> {
@@ -20,7 +21,7 @@ const FISH: &str = r#"# wt shell integration -- add to config.fish with:
 #   wt shell-init fish | source
 
 function wt --wraps wt --description 'git worktree manager'
-    # add, clone, cd and the short form `wt <worktree>` print a path and
+    # add, clone, new, cd and the short form `wt <worktree>` print a path and
     # nothing else, so this function reads the path and changes directory.
     # delete prints a path only when it removes the worktree that the shell
     # is in. Every other command writes for the user and runs untouched. A
@@ -57,6 +58,7 @@ complete -c wt -n __fish_use_subcommand -a 'sync s'   -d 'compare each worktree 
 complete -c wt -n __fish_use_subcommand -a follow     -d 'bring the current worktree to its upstream branch'
 complete -c wt -n __fish_use_subcommand -a 'prune p'  -d 'remove each worktree whose work is finished'
 complete -c wt -n __fish_use_subcommand -a clone      -d 'clone a repository into the .bare layout'
+complete -c wt -n __fish_use_subcommand -a new        -d 'make an empty repository in the .bare layout'
 complete -c wt -n __fish_use_subcommand -a shell-init -d 'print the shell integration'
 
 # `wt <worktree>` is the short form of `wt cd <worktree>`, so a worktree name
@@ -75,5 +77,6 @@ complete -c wt -n '__fish_seen_subcommand_from add a'      -l no-fetch   -d 'do 
 complete -c wt -n '__fish_seen_subcommand_from share sh' -F \
     -a '(command wt __shareable 2>/dev/null)'
 complete -c wt -n '__fish_seen_subcommand_from clone' -F
+complete -c wt -n '__fish_seen_subcommand_from new' -F
 complete -c wt -l repo -r -F -d 'act on this repository'
 "#;

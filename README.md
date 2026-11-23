@@ -29,6 +29,31 @@ project/
 └── main/     the first worktree
 ```
 
+### Start with a repository that you do not have yet
+
+```sh
+wt new project
+cd project/main
+```
+
+The command makes the same structure as `wt clone`, with an empty bare
+repository, the store and the hook. The first worktree has an empty first
+commit, so the branch is present. The branch is `init.defaultBranch` from the
+config of git, or `main` when the config does not set it.
+
+The command refuses a directory that is present and not empty, and it then
+changes nothing. If a later step fails, for example the commit with no
+`user.name`, the command removes what it made, and nothing that a different
+program wrote there.
+
+The repository has no origin. The config finds the shared paths by the URL of
+origin, so `wt share` refuses until you add it:
+
+```sh
+git remote add origin git@github.com:you/project.git
+git push -u origin main
+```
+
 ### Start with a repository that is already on your disk
 
 Go into a worktree of the repository. Make the store and the hook:
@@ -342,12 +367,13 @@ link is not in the worktree: when `.auth` is a link to the store,
 | `wt delete <worktree>...` | `wt d` | Remove each worktree. Delete its branch if git merged the branch. |
 | `wt prune` | `wt p` | Remove each worktree whose work is finished. Delete its branch. |
 | `wt clone <url> [dir]` | | Clone into the `.bare` layout. Make the first worktree. |
+| `wt new <dir>` | | Make an empty repository in the `.bare` layout. Make the first worktree. |
 | `wt shell-init fish` | | Print the shell integration. |
 
 A short form is the command itself, so it also wins over a worktree with the
 same name: `wt d` runs `wt delete`, and `wt cd d` goes to a worktree named
-`d`. `wt init` and `wt clone` have no short form. Each is short already, and
-you run it one time for a repository.
+`d`. `wt init`, `wt clone` and `wt new` have no short form. Each is short
+already, and you run it one time for a repository.
 
 ### Config file
 
@@ -434,7 +460,7 @@ wt shell-init fish | source
 ```
 
 The integration also gives completion, and it changes the directory after
-`wt add`, `wt clone`, `wt cd` and `wt <worktree>`. It also changes the
+`wt add`, `wt clone`, `wt new`, `wt cd` and `wt <worktree>`. It also changes the
 directory after `wt delete` removes the worktree that you are in:
 
 | Position | Candidates |

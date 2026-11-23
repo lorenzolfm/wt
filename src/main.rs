@@ -112,6 +112,12 @@ enum Command {
     /// Clone a repository into the .bare layout
     Clone { url: String, dir: Option<String> },
 
+    /// Make an empty repository in the .bare layout
+    ///
+    /// The first worktree is on init.defaultBranch, or main, with an empty
+    /// first commit. The command refuses a directory that is not empty.
+    New { dir: PathBuf },
+
     /// Print the shell integration
     ShellInit {
         #[arg(default_value = "fish")]
@@ -167,6 +173,12 @@ fn dispatch() -> Result<()> {
     match cli.command {
         Command::ShellInit { shell } => cmd::shell_init::run(&shell),
         Command::Clone { url, dir } => cmd::clone::run(&url, dir.as_deref()),
+        Command::New { dir } => {
+            let dest = cmd::new::run(&dir)?;
+            // The output gives the path to the shell.
+            println!("{}", dest.display());
+            Ok(())
+        }
         Command::Follow => match at {
             Some(dir) => cmd::follow::run(dir),
             None => cmd::follow::run(&std::env::current_dir()?),
@@ -211,7 +223,10 @@ fn dispatch() -> Result<()> {
                 Command::Worktrees => cmd::completions::worktrees(&repo),
                 Command::Shareable => cmd::completions::shareable(&repo),
                 Command::Bare(words) => cmd::cd::bare(&repo, &words),
-                Command::ShellInit { .. } | Command::Clone { .. } | Command::Follow => {
+                Command::ShellInit { .. }
+                | Command::Clone { .. }
+                | Command::New { .. }
+                | Command::Follow => {
                     unreachable!()
                 }
             }

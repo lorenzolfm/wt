@@ -11,6 +11,7 @@ pub mod follow;
 pub mod init;
 #[expect(clippy::print_stdout, reason = "the list of the worktrees")]
 pub mod ls;
+pub mod new;
 pub mod prune;
 pub mod share;
 #[expect(clippy::print_stdout, reason = "the code of the shell integration")]
