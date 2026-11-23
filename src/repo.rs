@@ -96,25 +96,36 @@ impl Repo {
         self.common.join("hooks").join("post-checkout")
     }
 
-    /// The key for this repository in the global config: its remote URL in
-    /// a normal form.
-    pub fn key(&self) -> Result<RepoKey> {
-        let url = git::out(&self.common, &["remote", "get-url", "origin"]).with_context(|| {
-            format!(
+    /// The key for this repository in the global config: the URL of origin
+    /// in a normal form. A repository with no origin has no key, and that is
+    /// a legal state: `wt new` makes such a repository, and it has one until
+    /// the user adds origin.
+    pub fn key(&self) -> Result<Option<RepoKey>> {
+        let args = ["remote", "get-url", "origin"];
+        let o = git::output(&self.common, &args)?;
+        match o.status.code() {
+            Some(0) => Ok(Some(RepoKey::from_url(
+                String::from_utf8_lossy(&o.stdout).trim_end(),
+            ))),
+            // `git remote get-url` exits with 2 for "No such remote". Each
+            // other failure is an error, and not a repository with no origin.
+            Some(2) => Ok(None),
+            _ => Err(git::failure(&args, &o)),
+        }
+    }
+
+    /// The key, for a command that cannot work with no origin.
+    pub fn require_key(&self) -> Result<RepoKey> {
+        match self.key()? {
+            Some(key) => Ok(key),
+            None => bail!(
                 "{} has no remote named origin\n  wt uses the remote URL as the key in {}",
                 self.common.display(),
                 Config::path()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|_| "the config file".into())
-            )
-        })?;
-        Ok(RepoKey::from_url(&url))
-    }
-
-    /// Whether the repository has a remote named origin. The key comes from
-    /// its URL.
-    pub(crate) fn has_origin(&self) -> bool {
-        git::ok(&self.common, &["remote", "get-url", "origin"])
+            ),
+        }
     }
 
     /// Whether `wt init` made the store of this repository. The config does
@@ -123,9 +134,13 @@ impl Repo {
         self.shared().is_dir()
     }
 
-    /// The shared paths for this repository, from the global config.
+    /// The shared paths for this repository, from the global config. The
+    /// config finds them by the URL of origin, so a repository with no origin
+    /// has no entry in it, and no shared path.
     pub fn manifest(&self) -> Result<RepoConfig> {
-        let key = self.key()?;
+        let Some(key) = self.key()? else {
+            return Ok(RepoConfig::default());
+        };
         Ok(Config::load()?.repo(&key).cloned().unwrap_or_default())
     }
 

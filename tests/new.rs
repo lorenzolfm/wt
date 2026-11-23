@@ -48,8 +48,13 @@ impl Home {
 
     /// Run `wt new <dir>` in the home.
     fn wt_new(&self, dir: &str) -> Output {
+        self.wt(self.path(), &["new", dir])
+    }
+
+    /// Run `wt <args>` in `dir`.
+    fn wt(&self, dir: &Path, args: &[&str]) -> Output {
         let mut c = Command::new(env!("CARGO_BIN_EXE_wt"));
-        c.current_dir(self.path()).args(["new", dir]);
+        c.current_dir(dir).args(args);
         self.env(&mut c);
         c.output().unwrap()
     }
@@ -215,4 +220,47 @@ fn the_hook_in_a_repository_with_no_origin_prints_nothing() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(!err.contains("wt:"), "{err}");
+}
+
+/// A repository with no origin has no shared path, and that is a legal
+/// state. The commands that read the shared paths work in it.
+#[test]
+fn ls_and_sync_work_in_a_repository_with_no_origin() {
+    let home = Home::with_identity();
+    assert!(home.wt_new("project").status.success());
+    let main = home.path().join("project").join("main");
+
+    let ls = home.wt(&main, &["ls"]);
+    let sync = home.wt(&main, &["sync"]);
+
+    assert!(
+        ls.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ls.stderr)
+    );
+    assert!(stdout(&ls).contains("main"), "{}", stdout(&ls));
+    assert!(
+        sync.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+}
+
+/// `wt share` needs the URL of origin for its entry in the config.
+#[test]
+fn share_refuses_a_repository_with_no_origin() {
+    let home = Home::with_identity();
+    assert!(home.wt_new("project").status.success());
+    let main = home.path().join("project").join("main");
+    fs::write(main.join(".gitignore"), ".env\n").unwrap();
+    fs::write(main.join(".env"), "").unwrap();
+
+    let o = home.wt(&main, &["share", ".env"]);
+
+    assert!(!o.status.success());
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("no remote named origin"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
 }

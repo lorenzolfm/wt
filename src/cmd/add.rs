@@ -279,7 +279,7 @@ fn branch_of(repo: &Repo, arg: &str, fetch: Fetch) -> Result<Branch> {
     if fetch == Fetch::Never {
         bail!("pull request {number} needs the network to find its branch. remove --no-fetch");
     }
-    let origin = repo.key()?;
+    let origin = repo.require_key()?;
     if key != origin {
         return parent_branch(repo, &key, &origin, number);
     }

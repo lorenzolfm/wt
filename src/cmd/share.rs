@@ -11,7 +11,7 @@ pub fn run(repo: &Repo, paths: &[String], force: bool) -> Result<()> {
     repo.require_managed()?;
     let cwd = std::env::current_dir()?;
     let toplevel = PathBuf::from(git::out(&cwd, &["rev-parse", "--show-toplevel"])?);
-    let key = repo.key()?;
+    let key = repo.require_key()?;
     let mut config = Config::load()?;
 
     for raw in paths {

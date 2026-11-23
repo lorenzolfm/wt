@@ -9,7 +9,7 @@ use std::fs;
 /// the first path.
 pub fn run(repo: &Repo) -> Result<()> {
     // The hook and each command find the shared paths by the URL of origin.
-    repo.key()?;
+    repo.require_key()?;
     install(repo)
 }
 
