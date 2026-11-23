@@ -7,7 +7,8 @@
 //! and [`cmd::add::make`] are its two steps, so a program can look at the
 //! branch and the directory before the worktree is made.
 //! [`cmd::follow::run`] brings a worktree to its upstream branch, in the same
-//! way.
+//! way. [`cmd::new::run`] makes an empty repository in the `.bare` layout and
+//! returns its first worktree.
 //!
 //! The post-checkout hook makes the links in a new worktree, and the hook
 //! runs the `wt` binary. A worktree from the library therefore gets its links
