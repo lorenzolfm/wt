@@ -43,7 +43,8 @@ config of git, or `main` when the config does not set it.
 
 The command refuses a directory that is present and not empty, and it then
 changes nothing. If a later step fails, for example the commit with no
-`user.name`, the command removes what it made.
+`user.name`, the command removes what it made, and nothing that a different
+program wrote there.
 
 The repository has no origin. The config finds the shared paths by the URL of
 origin, so `wt share` refuses until you add it:

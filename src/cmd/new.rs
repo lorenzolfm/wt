@@ -2,7 +2,7 @@ use crate::git;
 use crate::repo::Repo;
 use anyhow::{Context, Result, bail};
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 /// Make an empty repository in the `.bare` layout at `dir`, as `wt clone`
@@ -19,47 +19,129 @@ use std::path::{Path, PathBuf};
 ///
 /// The command refuses a `dir` that is present and not empty, and it then
 /// changes nothing. When a later step fails, for example the commit with no
-/// user.name, the command removes what it made.
+/// user.name, the command removes what it made, and nothing else.
 ///
 /// The result is the first worktree. The progress goes to stderr. The
 /// function prints nothing on stdout.
 pub fn run(dir: &Path) -> Result<PathBuf> {
     let container = std::path::absolute(dir)
         .with_context(|| format!("wt cannot find the path of {}", dir.display()))?;
-    let present = match fs::metadata(&container) {
-        Ok(m) if !m.is_dir() => bail!("{} is present and is not a directory", container.display()),
-        Ok(_) => {
-            let mut entries = fs::read_dir(&container)
-                .with_context(|| format!("wt cannot read {}", container.display()))?;
-            if entries.next().is_some() {
-                bail!("{} is present and is not empty", container.display());
-            }
-            true
-        }
-        Err(e) if e.kind() == ErrorKind::NotFound => false,
-        Err(e) => {
-            return Err(e).with_context(|| format!("wt cannot read {}", container.display()));
-        }
-    };
+    // This check gives a clear message. The claim below is what keeps a
+    // second writer out: the directory can change after the check.
+    refuse_unless_empty(&container)?;
 
-    if !present {
-        fs::create_dir_all(&container)
-            .with_context(|| format!("wt cannot make {}", container.display()))?;
-    }
-    make(&container).inspect_err(|_| {
-        if let Err(e) = undo(&container, present) {
+    let mut made = claim(&container)?;
+    make(&container, &mut made).inspect_err(|_| {
+        if let Err(e) = made.undo() {
             eprintln!(
                 "warning: wt cannot remove what it made in {}: {e}",
                 container.display()
             );
+            for p in made.left() {
+                eprintln!("  left       {}", p.display());
+            }
         }
     })
 }
 
-/// Make the repository in `container`, an empty directory.
-fn make(container: &Path) -> Result<PathBuf> {
+/// Refuse a `container` that is present and is not an empty directory.
+fn refuse_unless_empty(container: &Path) -> Result<()> {
+    match fs::metadata(container) {
+        Ok(m) if !m.is_dir() => bail!("{} is present and is not a directory", container.display()),
+        Ok(_) => {
+            let mut entries = fs::read_dir(container)
+                .with_context(|| format!("wt cannot read {}", container.display()))?;
+            if entries.next().is_some() {
+                bail!("{} is present and is not empty", container.display());
+            }
+            Ok(())
+        }
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("wt cannot read {}", container.display())),
+    }
+}
+
+/// The paths that one call of [`run`] made. The call claims `.bare` with
+/// `create_dir`, which fails when the path is present, so of two `wt new` on
+/// one directory only one gets a `Made`. [`Made::undo`] removes the paths in
+/// the list and nothing else, so it cannot remove the work of a different
+/// writer.
+struct Made {
+    /// The container, when this call made it. It is then the only path to
+    /// remove.
+    container: Option<PathBuf>,
+    /// The paths that this call made in the container, in the sequence of
+    /// their creation.
+    paths: Vec<PathBuf>,
+}
+
+impl Made {
+    /// Remove the paths in the reverse sequence of their creation.
+    fn undo(&mut self) -> std::io::Result<()> {
+        if let Some(c) = &self.container {
+            fs::remove_dir_all(c)?;
+            self.container = None;
+            self.paths.clear();
+            return Ok(());
+        }
+        while let Some(p) = self.paths.last() {
+            if fs::symlink_metadata(p)?.is_dir() {
+                fs::remove_dir_all(p)?;
+            } else {
+                fs::remove_file(p)?;
+            }
+            self.paths.pop();
+        }
+        Ok(())
+    }
+
+    /// The paths that are still present after `undo` failed.
+    fn left(&self) -> impl Iterator<Item = &PathBuf> {
+        self.container.iter().chain(&self.paths)
+    }
+}
+
+/// Make the container if it is absent, then claim `.bare` in it.
+///
+/// `create_dir` and not `create_dir_all` for the container: the second
+/// accepts a directory that a different writer made after the check.
+fn claim(container: &Path) -> Result<Made> {
+    if let Some(parent) = container.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("wt cannot make {}", parent.display()))?;
+    }
+    let made_container = match fs::create_dir(container) {
+        Ok(()) => true,
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => false,
+        Err(e) => {
+            return Err(e).with_context(|| format!("wt cannot make {}", container.display()));
+        }
+    };
+    let bare = container.join(".bare");
+    if let Err(e) = fs::create_dir(&bare) {
+        // The container is empty: the claim failed, so this call wrote
+        // nothing in it.
+        if made_container {
+            let _ = fs::remove_dir(container);
+        }
+        if e.kind() == ErrorKind::AlreadyExists {
+            bail!("{} is present and is not empty", container.display());
+        }
+        return Err(e).with_context(|| format!("wt cannot make {}", bare.display()));
+    }
+    Ok(Made {
+        container: made_container.then(|| container.to_path_buf()),
+        paths: vec![bare],
+    })
+}
+
+/// Make the repository in `container`, an empty directory that `made` holds
+/// the claim of. Each path that the function makes goes into `made`.
+fn make(container: &Path, made: &mut Made) -> Result<PathBuf> {
     let branch = default_branch(container)?;
 
+    // `git init` also accepts a repository that is present, and it then
+    // changes nothing. `.bare` is the empty directory of the claim.
     let bare = container.join(".bare");
     let bare_str = bare.to_string_lossy().into_owned();
     git::passthrough(
@@ -67,7 +149,14 @@ fn make(container: &Path) -> Result<PathBuf> {
         &["init", "--bare", "-b", &branch, "--", &bare_str],
     )?;
 
-    fs::write(container.join(".git"), "gitdir: ./.bare\n")
+    let dotgit = container.join(".git");
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&dotgit)
+        .context("wt cannot make the .git file")?;
+    made.paths.push(dotgit);
+    f.write_all(b"gitdir: ./.bare\n")
         .context("wt cannot write the .git file")?;
 
     let repo = Repo::at(bare);
@@ -76,6 +165,10 @@ fn make(container: &Path) -> Result<PathBuf> {
     // A '/' in the branch would nest the worktree, so the directory has the
     // name that `wt add` gives it.
     let dest = container.join(branch.replace('/', "-"));
+    // The worktree directory is a claim too, so `made` holds it only when
+    // this call made it. Git accepts an empty directory for a new worktree.
+    fs::create_dir(&dest).with_context(|| format!("wt cannot make {}", dest.display()))?;
+    made.paths.push(dest.clone());
     let dest_str = dest.to_string_lossy().into_owned();
     // The branch is unborn, and git refuses it as a reference. `--orphan`
     // makes a worktree on it, ready for the first commit.
@@ -111,19 +204,55 @@ fn default_branch(dir: &Path) -> Result<String> {
     Ok(branch)
 }
 
-/// Remove what `make` made in `container`. A directory that was present was
-/// empty, so each entry in it is from `make`, and the directory stays.
-fn undo(container: &Path, present: bool) -> std::io::Result<()> {
-    if !present {
-        return fs::remove_dir_all(container);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// A different `wt new` claimed the directory after the check of this
+    /// call. The claim of this call fails, and it removes nothing of the
+    /// other.
+    #[test]
+    fn a_directory_that_a_different_call_claimed_is_refused_and_stays() {
+        let tmp = TempDir::new().unwrap();
+        let container = tmp.path().join("project");
+        let first = claim(&container).unwrap();
+        fs::write(container.join(".bare").join("HEAD"), "").unwrap();
+
+        assert!(claim(&container).is_err());
+        assert!(first.paths[0].join("HEAD").is_file());
     }
-    for entry in fs::read_dir(container)? {
-        let path = entry?.path();
-        if fs::symlink_metadata(&path)?.is_dir() {
-            fs::remove_dir_all(&path)?;
-        } else {
-            fs::remove_file(&path)?;
-        }
+
+    /// The directory was empty at the check, and a different writer added a
+    /// file while the command ran, for example while git asked for a
+    /// signature. The undo removes what the command made, and the file stays.
+    #[test]
+    fn undo_in_a_directory_that_was_present_keeps_a_file_of_a_different_writer() {
+        let tmp = TempDir::new().unwrap();
+        let container = tmp.path().join("project");
+        fs::create_dir(&container).unwrap();
+        let mut made = claim(&container).unwrap();
+        fs::write(container.join("notes.txt"), "mine").unwrap();
+
+        made.undo().unwrap();
+
+        assert!(!container.join(".bare").exists());
+        assert_eq!(
+            fs::read_to_string(container.join("notes.txt")).unwrap(),
+            "mine"
+        );
     }
-    Ok(())
+
+    /// The container is absent, so the claim makes it, and the undo removes it.
+    #[test]
+    fn undo_removes_the_directory_that_the_claim_made() {
+        let tmp = TempDir::new().unwrap();
+        let container = tmp.path().join("a").join("project");
+        let mut made = claim(&container).unwrap();
+
+        made.undo().unwrap();
+
+        assert!(!container.exists());
+        assert_eq!(made.left().count(), 0);
+    }
 }
